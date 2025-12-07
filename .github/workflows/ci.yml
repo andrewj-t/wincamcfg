@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     name: Build and Test
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     
     steps:
     - name: Checkout code
@@ -18,13 +18,6 @@ jobs:
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: x86_64-pc-windows-gnu
-    
-    - name: Install cross-compilation dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y mingw-w64
     
     - name: Cache cargo registry
       uses: actions/cache@v4
@@ -48,13 +41,16 @@ jobs:
       run: cargo fmt --all -- --check
     
     - name: Run clippy
-      run: cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
+      run: cargo clippy -- -D warnings
     
     - name: Build
-      run: cargo build --release --target x86_64-pc-windows-gnu --verbose
+      run: cargo build --release --verbose
+    
+    - name: Run tests
+      run: cargo test --verbose
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: wincamcfg-windows
-        path: target/x86_64-pc-windows-gnu/release/wincamcfg.exe
+        path: target/release/wincamcfg.exe
