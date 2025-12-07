@@ -2,8 +2,8 @@ pub mod webcam;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use indexmap::IndexMap;
 use serde_with::skip_serializing_none;
-use std::collections::HashMap;
 use tracing::{debug, info, instrument};
 use tracing_subscriber::EnvFilter;
 
@@ -14,7 +14,7 @@ struct DeviceOutput<'a> {
     index: usize,
     name: &'a str,
     device_info: Option<DeviceInfoOutput<'a>>,
-    properties: HashMap<String, PropertyOutput>,
+    properties: IndexMap<String, PropertyOutput>,
 }
 
 #[skip_serializing_none]
@@ -213,7 +213,7 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
         .chain(&device.camera_control_properties)
         .collect();
 
-    let property_outputs: HashMap<String, PropertyOutput> = all_properties
+    let property_outputs: IndexMap<String, PropertyOutput> = all_properties
         .iter()
         .map(|prop| {
             (

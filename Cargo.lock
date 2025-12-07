@@ -868,10 +868,11 @@ dependencies = [
 
 [[package]]
 name = "wincamcfg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "indexmap 2.12.1",
  "serde",
  "serde_json",
  "serde_with",
