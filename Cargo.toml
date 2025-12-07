@@ -1,0 +1,31 @@
+[package]
+name = "wincamcfg"
+version = "0.1.0"
+edition = "2024"
+description = "A command line utility for managing webcam configuration on windows"
+license = "MIT"
+repository = "https://github.com/andrewj-t/wincamcfg/"
+homepage = "https://github.com/andrewj-t/wincamcfg/"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_with = "3.11"
+strum = { version = "0.26", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Media_DirectShow",
+    "Win32_System_Variant",
+    "Win32_System_Registry",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_UI_Shell",
+] }
+
+[build-dependencies]
+winresource = "0.1"
