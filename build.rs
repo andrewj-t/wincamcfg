@@ -6,9 +6,10 @@ fn main() {
     {
         // Get version from Cargo.toml
         let version = env!("CARGO_PKG_VERSION");
-        
+
         let mut res = winresource::WindowsResource::new();
-        res.set_manifest(r#"
+        res.set_manifest(
+            r#"
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
     version="0.1.0.0"
@@ -42,15 +43,22 @@ fn main() {
     </windowsSettings>
   </application>
 </assembly>
-"#);
-        
+"#,
+        );
+
         res.set("ProductName", "wincamcfg")
-           .set("FileDescription", "A command line utility for managing webcam configuration on windows")
-           .set("CompanyName", "Open Source")
-           .set("LegalCopyright", "Copyright (C) 2025. Licensed under the MIT License.")
-           .set("ProductVersion", version)
-           .set("FileVersion", version);
-        
+            .set(
+                "FileDescription",
+                "A command line utility for managing webcam configuration on windows",
+            )
+            .set("CompanyName", "Open Source")
+            .set(
+                "LegalCopyright",
+                "Copyright (C) 2025. Licensed under the MIT License.",
+            )
+            .set("ProductVersion", version)
+            .set("FileVersion", version);
+
         res.compile().unwrap();
     }
 }
