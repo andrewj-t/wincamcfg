@@ -472,47 +472,37 @@ unsafe fn get_device_path(moniker: &IMoniker) -> Result<String> {
 #[instrument(skip(moniker))]
 unsafe fn get_property_string(moniker: &IMoniker, prop_name: &str) -> Result<String> {
     trace!(property_name = %prop_name, "Binding moniker to property bag");
+    // Idiomatic COM: keep unsafe as small as possible, use RAII for COM lifetime, and handle errors explicitly
+    use windows::Win32::System::Variant::{VARIANT, VariantClear};
+    // Bind to property bag (safe)
+    let prop_bag: IPropertyBag = unsafe {
+        moniker.BindToStorage(None, None)
+    }.with_context(|| format!("Failed to bind to property bag for property '{}'", prop_name))?;
+    trace!("BindToStorage successful");
+
+    let mut var = VARIANT::default();
+    let prop_name_wide: Vec<u16> = prop_name.encode_utf16().chain(std::iter::once(0)).collect();
+
+    // Read property value (unsafe only for FFI call)
     unsafe {
-        let prop_bag: IPropertyBag = moniker.BindToStorage(None, None).with_context(|| {
-            format!(
-                "Failed to bind to property bag for property '{}'",
-                prop_name
-            )
-        })?;
-        trace!("BindToStorage successful");
-
-        let mut var: std::mem::MaybeUninit<VARIANT> = std::mem::MaybeUninit::zeroed();
-        let prop_name_wide: Vec<u16> = prop_name.encode_utf16().chain(std::iter::once(0)).collect();
-
-        trace!("Reading property value");
         prop_bag
-            .Read(PCWSTR(prop_name_wide.as_ptr()), var.as_mut_ptr(), None)
-            .with_context(|| format!("Failed to read property '{}'", prop_name))?;
+            .Read(PCWSTR(prop_name_wide.as_ptr()), &mut var, None)
+    }.with_context(|| format!("Failed to read property '{}'", prop_name))?;
 
-        let mut var = var.assume_init();
+    // Extract the value (safe)
+    let result = if unsafe { var.Anonymous.Anonymous.vt.0 } == VT_BSTR.0 {
+        let bstr = unsafe { &var.Anonymous.Anonymous.Anonymous.bstrVal };
+        let value = bstr.to_string();
+        trace!(property_value = %value, "Property value retrieved");
+        Ok(value)
+    } else {
+        Err(anyhow::anyhow!("Property '{}' is not a BSTR", prop_name))
+    };
 
-        // Extract the value and ensure cleanup happens even on error
-        let result = {
-            #[repr(C)]
-            struct VariantBstr {
-                vt: u16,
-                _reserved1: u16,
-                _reserved2: u16,
-                _reserved3: u16,
-                bstr_val: BSTR,
-            }
+    // Always clear VARIANT regardless of success or failure (unsafe only for FFI call)
+    let _ = unsafe { VariantClear(&mut var) };
 
-            let var_bstr = &*((&var as *const VARIANT) as *const VariantBstr);
-            let value = var_bstr.bstr_val.to_string();
-            trace!(property_value = %value, "Property value retrieved");
-            Ok(value)
-        };
-
-        // Always clear VARIANT regardless of success or failure
-        let _ = VariantClear(&mut var);
-
-        result
-    }
+    result
 }
 
 // Convert capability flags to human-readable string ("Manual", "Auto", "Manual, Auto")
