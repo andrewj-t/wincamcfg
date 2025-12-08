@@ -11,7 +11,7 @@ use tracing::{debug, instrument, trace};
 use windows::{
     Win32::Devices::DeviceAndDriverInstallation::*, Win32::Foundation::*,
     Win32::Media::DirectShow::*, Win32::System::Com::StructuredStorage::*, Win32::System::Com::*,
-    Win32::System::Variant::*, Win32::UI::Shell::*, core::*,
+    Win32::UI::Shell::*, core::*,
 };
 
 // String buffer size for Windows API calls (registry, property bags, etc.)
@@ -472,25 +472,30 @@ unsafe fn get_device_path(moniker: &IMoniker) -> Result<String> {
 #[instrument(skip(moniker))]
 unsafe fn get_property_string(moniker: &IMoniker, prop_name: &str) -> Result<String> {
     trace!(property_name = %prop_name, "Binding moniker to property bag");
-    // Idiomatic COM: keep unsafe as small as possible, use RAII for COM lifetime, and handle errors explicitly
-    use windows::Win32::System::Variant::{VARIANT, VariantClear};
+    // Use HSTRING for property name
+    use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VariantClear};
+    use windows::core::HSTRING;
+
     // Bind to property bag (safe)
-    let prop_bag: IPropertyBag = unsafe {
-        moniker.BindToStorage(None, None)
-    }.with_context(|| format!("Failed to bind to property bag for property '{}'", prop_name))?;
+    let prop_bag: IPropertyBag =
+        unsafe { moniker.BindToStorage(None, None) }.with_context(|| {
+            format!(
+                "Failed to bind to property bag for property '{}'",
+                prop_name
+            )
+        })?;
     trace!("BindToStorage successful");
 
     let mut var = VARIANT::default();
-    let prop_name_wide: Vec<u16> = prop_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let prop_name_hstr = HSTRING::from(prop_name);
 
     // Read property value (unsafe only for FFI call)
-    unsafe {
-        prop_bag
-            .Read(PCWSTR(prop_name_wide.as_ptr()), &mut var, None)
-    }.with_context(|| format!("Failed to read property '{}'", prop_name))?;
+    unsafe { prop_bag.Read(PCWSTR(prop_name_hstr.as_ptr()), &mut var, None) }
+        .with_context(|| format!("Failed to read property '{}'", prop_name))?;
 
     // Extract the value (safe)
-    let result = if unsafe { var.Anonymous.Anonymous.vt.0 } == VT_BSTR.0 {
+    let result = if unsafe { var.Anonymous.Anonymous.vt } == VT_BSTR {
+        // Use windows::core::BSTR for conversion
         let bstr = unsafe { &var.Anonymous.Anonymous.Anonymous.bstrVal };
         let value = bstr.to_string();
         trace!(property_value = %value, "Property value retrieved");
@@ -717,69 +722,66 @@ unsafe fn read_reg_value(
 #[instrument(skip(moniker))]
 unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
     debug!("Binding moniker to IBaseFilter");
-    unsafe {
-        let filter: IBaseFilter = moniker
-            .BindToObject(None, None)
-            .context("Failed to bind to IBaseFilter for VideoProcAmp")?;
-        trace!("Casting IBaseFilter to IAMVideoProcAmp");
-        let video_proc_amp: IAMVideoProcAmp = filter
-            .cast()
-            .context("Failed to get IAMVideoProcAmp interface")?;
-        debug!("IAMVideoProcAmp interface obtained");
+    let filter: IBaseFilter = unsafe { moniker.BindToObject(None, None) }
+        .context("Failed to bind to IBaseFilter for VideoProcAmp")?;
+    trace!("Casting IBaseFilter to IAMVideoProcAmp");
+    let video_proc_amp: IAMVideoProcAmp = filter
+        .cast()
+        .context("Failed to get IAMVideoProcAmp interface")?;
+    debug!("IAMVideoProcAmp interface obtained");
 
-        let properties = [
-            // Basic image controls
-            VideoProcAmpProperty::Brightness,
-            VideoProcAmpProperty::Contrast,
-            VideoProcAmpProperty::Saturation,
-            // Color controls
-            VideoProcAmpProperty::Hue,
-            VideoProcAmpProperty::WhiteBalance,
-            VideoProcAmpProperty::WhiteBalanceComponent,
-            VideoProcAmpProperty::ColorEnable,
-            VideoProcAmpProperty::Gamma,
-            // Advanced controls
-            VideoProcAmpProperty::Sharpness,
-            VideoProcAmpProperty::BacklightCompensation,
-            VideoProcAmpProperty::Gain,
-            VideoProcAmpProperty::PowerlineFrequency,
-            VideoProcAmpProperty::DigitalMultiplier,
-            VideoProcAmpProperty::DigitalMultiplierLimit,
-        ];
+    let properties = [
+        // Basic image controls
+        VideoProcAmpProperty::Brightness,
+        VideoProcAmpProperty::Contrast,
+        VideoProcAmpProperty::Saturation,
+        // Color controls
+        VideoProcAmpProperty::Hue,
+        VideoProcAmpProperty::WhiteBalance,
+        VideoProcAmpProperty::WhiteBalanceComponent,
+        VideoProcAmpProperty::ColorEnable,
+        VideoProcAmpProperty::Gamma,
+        // Advanced controls
+        VideoProcAmpProperty::Sharpness,
+        VideoProcAmpProperty::BacklightCompensation,
+        VideoProcAmpProperty::Gain,
+        VideoProcAmpProperty::PowerlineFrequency,
+        VideoProcAmpProperty::DigitalMultiplier,
+        VideoProcAmpProperty::DigitalMultiplierLimit,
+    ];
 
-        let mut capabilities = Vec::new();
+    let mut capabilities = Vec::new();
 
-        trace!(
-            property_count = properties.len(),
-            "Enumerating VideoProcAmp properties"
-        );
-        for property in properties {
-            let prop_id: i32 = property.into();
-            let name = property.to_string();
-            let mut min = 0;
-            let mut max = 0;
-            let mut step = 0;
-            let mut default = 0;
-            let mut caps = 0;
+    trace!(
+        property_count = properties.len(),
+        "Enumerating VideoProcAmp properties"
+    );
+    for property in properties {
+        let prop_id: i32 = property.into();
+        let name = property.to_string();
+        let mut min = 0;
+        let mut max = 0;
+        let mut step = 0;
+        let mut default = 0;
+        let mut caps = 0;
 
-            if video_proc_amp
-                .GetRange(
-                    prop_id,
-                    &mut min,
-                    &mut max,
-                    &mut step,
-                    &mut default,
-                    &mut caps,
-                )
-                .is_ok()
-            {
-                trace!(property = %name, min, max, step, default, caps, "GetRange successful");
-                let mut value = 0;
-                let mut flags_val = 0;
-                let current_formatted = if video_proc_amp
-                    .Get(prop_id, &mut value, &mut flags_val)
-                    .is_ok()
-                {
+        if unsafe {
+            video_proc_amp.GetRange(
+                prop_id,
+                &mut min,
+                &mut max,
+                &mut step,
+                &mut default,
+                &mut caps,
+            )
+        }
+        .is_ok()
+        {
+            trace!(property = %name, min, max, step, default, caps, "GetRange successful");
+            let mut value = 0;
+            let mut flags_val = 0;
+            let current_formatted =
+                if unsafe { video_proc_amp.Get(prop_id, &mut value, &mut flags_val) }.is_ok() {
                     trace!(property = %name, value, flags = flags_val, "Get successful");
                     // If auto mode is enabled, return "Auto" as the current value
                     if (caps & CAPABILITY_AUTO != 0) && (flags_val & CAPABILITY_AUTO != 0) {
@@ -791,86 +793,82 @@ unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<Proper
                     None
                 };
 
-                capabilities.push(PropertyInfo {
-                    name: name.to_string(),
-                    supported_values: get_supported_values(&name, min, max, caps),
-                    default: format_property_value(&name, default),
-                    current: current_formatted,
-                    capabilities: format_capabilities(caps),
-                    property_type: PropertyType::VideoProcAmp,
-                });
-            } else {
-                trace!(property = %name, "GetRange failed - property not supported");
-            }
+            capabilities.push(PropertyInfo {
+                name: name.to_string(),
+                supported_values: get_supported_values(&name, min, max, caps),
+                default: format_property_value(&name, default),
+                current: current_formatted,
+                capabilities: format_capabilities(caps),
+                property_type: PropertyType::VideoProcAmp,
+            });
+        } else {
+            trace!(property = %name, "GetRange failed - property not supported");
         }
-
-        debug!(
-            property_count = capabilities.len(),
-            "VideoProcAmp property enumeration complete"
-        );
-        Ok(capabilities)
     }
+
+    debug!(
+        property_count = capabilities.len(),
+        "VideoProcAmp property enumeration complete"
+    );
+    Ok(capabilities)
 }
 
 #[instrument(skip(moniker))]
 unsafe fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
     debug!("Binding moniker to IBaseFilter");
-    unsafe {
-        let filter: IBaseFilter = moniker
-            .BindToObject(None, None)
-            .context("Failed to bind to IBaseFilter for CameraControl")?;
-        trace!("Casting IBaseFilter to IAMCameraControl");
-        let camera_control: IAMCameraControl = filter
-            .cast()
-            .context("Failed to get IAMCameraControl interface")?;
-        debug!("IAMCameraControl interface obtained");
+    let filter: IBaseFilter = unsafe { moniker.BindToObject(None, None) }
+        .context("Failed to bind to IBaseFilter for CameraControl")?;
+    trace!("Casting IBaseFilter to IAMCameraControl");
+    let camera_control: IAMCameraControl = filter
+        .cast()
+        .context("Failed to get IAMCameraControl interface")?;
+    debug!("IAMCameraControl interface obtained");
 
-        let properties = [
-            // Primary image controls
-            CameraControlProperty::Exposure,
-            CameraControlProperty::Focus,
-            // Mechanical positioning
-            CameraControlProperty::Pan,
-            CameraControlProperty::Tilt,
-            CameraControlProperty::Roll,
-            CameraControlProperty::Zoom,
-            // Aperture
-            CameraControlProperty::Iris,
-        ];
+    let properties = [
+        // Primary image controls
+        CameraControlProperty::Exposure,
+        CameraControlProperty::Focus,
+        // Mechanical positioning
+        CameraControlProperty::Pan,
+        CameraControlProperty::Tilt,
+        CameraControlProperty::Roll,
+        CameraControlProperty::Zoom,
+        // Aperture
+        CameraControlProperty::Iris,
+    ];
 
-        let mut capabilities = Vec::new();
+    let mut capabilities = Vec::new();
 
-        trace!(
-            property_count = properties.len(),
-            "Enumerating CameraControl properties"
-        );
-        for property in properties {
-            let prop_id: i32 = property.into();
-            let name = property.to_string();
-            let mut min = 0;
-            let mut max = 0;
-            let mut step = 0;
-            let mut default = 0;
-            let mut caps = 0;
+    trace!(
+        property_count = properties.len(),
+        "Enumerating CameraControl properties"
+    );
+    for property in properties {
+        let prop_id: i32 = property.into();
+        let name = property.to_string();
+        let mut min = 0;
+        let mut max = 0;
+        let mut step = 0;
+        let mut default = 0;
+        let mut caps = 0;
 
-            if camera_control
-                .GetRange(
-                    prop_id,
-                    &mut min,
-                    &mut max,
-                    &mut step,
-                    &mut default,
-                    &mut caps,
-                )
-                .is_ok()
-            {
-                trace!(property = %name, min, max, step, default, caps, "GetRange successful");
-                let mut value = 0;
-                let mut flags_val = 0;
-                let current_formatted = if camera_control
-                    .Get(prop_id, &mut value, &mut flags_val)
-                    .is_ok()
-                {
+        if unsafe {
+            camera_control.GetRange(
+                prop_id,
+                &mut min,
+                &mut max,
+                &mut step,
+                &mut default,
+                &mut caps,
+            )
+        }
+        .is_ok()
+        {
+            trace!(property = %name, min, max, step, default, caps, "GetRange successful");
+            let mut value = 0;
+            let mut flags_val = 0;
+            let current_formatted =
+                if unsafe { camera_control.Get(prop_id, &mut value, &mut flags_val) }.is_ok() {
                     trace!(property = %name, value, flags = flags_val, "Get successful");
                     // If auto mode is enabled, return "Auto" as the current value
                     if (caps & CAPABILITY_AUTO != 0) && (flags_val & CAPABILITY_AUTO != 0) {
@@ -882,25 +880,24 @@ unsafe fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<Proper
                     None
                 };
 
-                capabilities.push(PropertyInfo {
-                    name: name.to_string(),
-                    supported_values: get_supported_values(&name, min, max, caps),
-                    default: format_property_value(&name, default),
-                    current: current_formatted,
-                    capabilities: format_capabilities(caps),
-                    property_type: PropertyType::CameraControl,
-                });
-            } else {
-                trace!(property = %name, "GetRange failed - property not supported");
-            }
+            capabilities.push(PropertyInfo {
+                name: name.to_string(),
+                supported_values: get_supported_values(&name, min, max, caps),
+                default: format_property_value(&name, default),
+                current: current_formatted,
+                capabilities: format_capabilities(caps),
+                property_type: PropertyType::CameraControl,
+            });
+        } else {
+            trace!(property = %name, "GetRange failed - property not supported");
         }
-
-        debug!(
-            property_count = capabilities.len(),
-            "CameraControl property enumeration complete"
-        );
-        Ok(capabilities)
     }
+
+    debug!(
+        property_count = capabilities.len(),
+        "CameraControl property enumeration complete"
+    );
+    Ok(capabilities)
 }
 
 /// Find a device moniker by its DirectShow device path
@@ -946,38 +943,33 @@ pub fn set_video_proc_amp_property(
     value: i32,
     auto: bool,
 ) -> Result<()> {
-    unsafe {
-        let _com = ComGuard::new()?;
+    let _com = unsafe { ComGuard::new()? };
 
-        let target_path = device
-            .device_path
-            .as_ref()
-            .context("Device path not available")?;
+    let target_path = device
+        .device_path
+        .as_ref()
+        .context("Device path not available")?;
 
-        let mon = find_device_by_path(target_path)?;
-        let filter: IBaseFilter = mon
-            .BindToObject(None, None)
-            .context("Failed to bind to device filter")?;
-        let video_proc_amp: IAMVideoProcAmp = filter
-            .cast()
-            .context("Failed to get VideoProcAmp interface")?;
+    let mon = unsafe { find_device_by_path(target_path)? };
+    let filter: IBaseFilter =
+        unsafe { mon.BindToObject(None, None) }.context("Failed to bind to device filter")?;
+    let video_proc_amp: IAMVideoProcAmp = filter
+        .cast()
+        .context("Failed to get VideoProcAmp interface")?;
 
-        let flags = if auto {
-            CAPABILITY_AUTO
-        } else {
-            CAPABILITY_MANUAL
-        };
-        video_proc_amp
-            .Set(property.into(), value, flags)
-            .with_context(|| {
-                format!(
-                    "Failed to set VideoProcAmp property {} to value {}",
-                    property, value
-                )
-            })?;
+    let flags = if auto {
+        CAPABILITY_AUTO
+    } else {
+        CAPABILITY_MANUAL
+    };
+    unsafe { video_proc_amp.Set(property.into(), value, flags) }.with_context(|| {
+        format!(
+            "Failed to set VideoProcAmp property {} to value {}",
+            property, value
+        )
+    })?;
 
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Set a CameraControl property
@@ -987,38 +979,33 @@ pub fn set_camera_control_property(
     value: i32,
     auto: bool,
 ) -> Result<()> {
-    unsafe {
-        let _com = ComGuard::new()?;
+    let _com = unsafe { ComGuard::new()? };
 
-        let target_path = device
-            .device_path
-            .as_ref()
-            .context("Device path not available")?;
+    let target_path = device
+        .device_path
+        .as_ref()
+        .context("Device path not available")?;
 
-        let mon = find_device_by_path(target_path)?;
-        let filter: IBaseFilter = mon
-            .BindToObject(None, None)
-            .context("Failed to bind to device filter")?;
-        let camera_control: IAMCameraControl = filter
-            .cast()
-            .context("Failed to get CameraControl interface")?;
+    let mon = unsafe { find_device_by_path(target_path)? };
+    let filter: IBaseFilter =
+        unsafe { mon.BindToObject(None, None) }.context("Failed to bind to device filter")?;
+    let camera_control: IAMCameraControl = filter
+        .cast()
+        .context("Failed to get CameraControl interface")?;
 
-        let flags = if auto {
-            CAPABILITY_AUTO
-        } else {
-            CAPABILITY_MANUAL
-        };
-        camera_control
-            .Set(property.into(), value, flags)
-            .with_context(|| {
-                format!(
-                    "Failed to set CameraControl property {} to value {}",
-                    property, value
-                )
-            })?;
+    let flags = if auto {
+        CAPABILITY_AUTO
+    } else {
+        CAPABILITY_MANUAL
+    };
+    unsafe { camera_control.Set(property.into(), value, flags) }.with_context(|| {
+        format!(
+            "Failed to set CameraControl property {} to value {}",
+            property, value
+        )
+    })?;
 
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Set a property by name on a device
