@@ -111,7 +111,8 @@ jobs:
       shell: pwsh
       run: |
         $tag = "v${{ steps.version.outputs.VERSION }}"
-        if (git rev-parse $tag 2>$null) {
+        $tagExists = @(git tag -l $tag).Count -gt 0
+        if ($tagExists) {
           Write-Output "TAG_EXISTS=true" >> $env:GITHUB_OUTPUT
           Write-Output "Tag $tag already exists"
         } else {
