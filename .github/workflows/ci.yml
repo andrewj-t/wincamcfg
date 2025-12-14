@@ -4,10 +4,21 @@ permissions:
 
 on:
   pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - '.github/workflows/ci.yml'
   push:
     branches:
       - main
       - develop
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
 
 env:
   CARGO_TERM_COLOR: always
