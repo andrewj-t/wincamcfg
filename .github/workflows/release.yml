@@ -134,6 +134,12 @@ jobs:
     - name: Build release binary
       run: cargo build --release
     
+    - name: Install cargo-sbom
+      run: cargo install cargo-sbom
+    
+    - name: Generate SBOM
+      run: cargo sbom --output spdx-json > sbom.spdx.json
+    
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
@@ -142,6 +148,7 @@ jobs:
         prerelease: false
         files: |
           target/release/wincamcfg.exe
+          sbom.spdx.json
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
