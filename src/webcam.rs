@@ -6,7 +6,7 @@
 /// value formatting.
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use strum::Display;
+use strum::{Display, EnumString};
 use tracing::{debug, instrument, trace};
 use windows::{
     Win32::Devices::DeviceAndDriverInstallation::*, Win32::Foundation::*,
@@ -16,10 +16,6 @@ use windows::{
 
 // String buffer size for Windows API calls (registry, property bags, etc.)
 const STRING_BUFFER_SIZE: usize = 512;
-
-// DirectShow property capability flags (used for Auto vs Manual mode)
-const CAPABILITY_AUTO: i32 = 0x1;
-const CAPABILITY_MANUAL: i32 = 0x2;
 
 /// RAII guard for COM initialization/cleanup
 ///
@@ -56,7 +52,7 @@ const CLSID_VIDEO_INPUT_DEVICE_CATEGORY: GUID =
     GUID::from_u128(0x860bb310_5d01_11d0_bd3b_00a0c911ce86);
 
 /// VideoProcAmp property IDs from DirectShow (ksmedia.h)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString)]
 #[repr(i32)]
 pub enum VideoProcAmpProperty {
     Brightness = 0,
@@ -81,32 +77,8 @@ impl From<VideoProcAmpProperty> for i32 {
     }
 }
 
-impl std::str::FromStr for VideoProcAmpProperty {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "Brightness" => Ok(VideoProcAmpProperty::Brightness),
-            "Contrast" => Ok(VideoProcAmpProperty::Contrast),
-            "Hue" => Ok(VideoProcAmpProperty::Hue),
-            "Saturation" => Ok(VideoProcAmpProperty::Saturation),
-            "Sharpness" => Ok(VideoProcAmpProperty::Sharpness),
-            "Gamma" => Ok(VideoProcAmpProperty::Gamma),
-            "ColorEnable" => Ok(VideoProcAmpProperty::ColorEnable),
-            "WhiteBalance" => Ok(VideoProcAmpProperty::WhiteBalance),
-            "BacklightCompensation" => Ok(VideoProcAmpProperty::BacklightCompensation),
-            "Gain" => Ok(VideoProcAmpProperty::Gain),
-            "DigitalMultiplier" => Ok(VideoProcAmpProperty::DigitalMultiplier),
-            "DigitalMultiplierLimit" => Ok(VideoProcAmpProperty::DigitalMultiplierLimit),
-            "WhiteBalanceComponent" => Ok(VideoProcAmpProperty::WhiteBalanceComponent),
-            "PowerlineFrequency" => Ok(VideoProcAmpProperty::PowerlineFrequency),
-            _ => Err(anyhow::anyhow!("Unknown VideoProcAmp property: {}", s)),
-        }
-    }
-}
-
 /// CameraControl property IDs from DirectShow (ksmedia.h)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString)]
 #[repr(i32)]
 pub enum CameraControlProperty {
     Pan = 0,
@@ -121,23 +93,6 @@ pub enum CameraControlProperty {
 impl From<CameraControlProperty> for i32 {
     fn from(property: CameraControlProperty) -> Self {
         property as i32
-    }
-}
-
-impl std::str::FromStr for CameraControlProperty {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "Pan" => Ok(CameraControlProperty::Pan),
-            "Tilt" => Ok(CameraControlProperty::Tilt),
-            "Roll" => Ok(CameraControlProperty::Roll),
-            "Zoom" => Ok(CameraControlProperty::Zoom),
-            "Exposure" => Ok(CameraControlProperty::Exposure),
-            "Iris" => Ok(CameraControlProperty::Iris),
-            "Focus" => Ok(CameraControlProperty::Focus),
-            _ => Err(anyhow::anyhow!("Unknown CameraControl property: {}", s)),
-        }
     }
 }
 
@@ -166,15 +121,29 @@ pub struct DeviceInfo {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PropertyInfo {
     pub name: String,
-    pub supported_values: String,
-    pub default: String,
-    pub current: Option<String>,
+    pub min: Option<i32>,
+    pub max: Option<i32>,
+    pub step: Option<i32>,
+    pub default: Option<i32>,
+    pub caps: Option<i32>,
+    pub current: Option<i32>,
     pub capabilities: Option<String>,
     pub property_type: PropertyType,
 }
 
+/// Build enum mapping from property name and min/max for display
+pub fn build_enum_display(property_name: &str, min: i32, max: i32) -> Option<String> {
+    let mapping = get_enum_mapping(property_name, min, max)?;
+    let display = mapping
+        .iter()
+        .map(|(val, label)| format!("{} ({})", label, val))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(display)
+}
+
 /// Format a property value into a human-readable label based on the property name
-fn format_property_value(property_name: &str, value: i32) -> String {
+pub fn format_property_value(property_name: &str, value: i32) -> String {
     match property_name {
         "PowerlineFrequency" => match value {
             0 => "Disabled".to_string(),
@@ -240,48 +209,6 @@ pub fn parse_property_value(property_name: &str, value_str: &str) -> Result<(i32
     };
 
     Ok((value, false))
-}
-
-/// Generate supported values string based on property name and min/max values
-/// Returns either a range ("0-255") or enumerated values ("50Hz, 60Hz")
-/// Appends "Auto" if the property supports automatic mode
-fn get_supported_values(property_name: &str, min: i32, max: i32, caps: i32) -> String {
-    let base_values = match property_name {
-        "PowerlineFrequency" => {
-            let mut values = vec![];
-            if min <= 0 && max >= 0 {
-                values.push("Disabled");
-            }
-            if min <= 1 && max >= 1 {
-                values.push("50Hz");
-            }
-            if min <= 2 && max >= 2 {
-                values.push("60Hz");
-            }
-            if min <= 3 && max >= 3 {
-                values.push("Auto");
-            }
-            values.join(", ")
-        }
-        "ColorEnable" | "BacklightCompensation" => {
-            let mut values = vec![];
-            if min <= 0 && max >= 0 {
-                values.push("Off");
-            }
-            if min <= 1 && max >= 1 {
-                values.push("On");
-            }
-            values.join(", ")
-        }
-        _ => format!("{}-{}", min, max),
-    };
-
-    // Append Auto if the property supports automatic mode
-    if caps & CAPABILITY_AUTO != 0 {
-        format!("{}, Auto", base_values)
-    } else {
-        base_values
-    }
 }
 
 /// Internal structure for collecting driver information from Windows CM API
@@ -442,37 +369,32 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
 }
 
 #[instrument(skip(moniker))]
-unsafe fn get_device_name(moniker: &IMoniker) -> Result<String> {
+fn get_device_name(moniker: &IMoniker) -> Result<String> {
     debug!("Reading FriendlyName from property bag");
-    unsafe {
-        let result = get_property_string(moniker, "FriendlyName");
-        if let Ok(ref name) = result {
-            debug!(friendly_name = %name, "Device name obtained");
-        } else {
-            trace!("Failed to read FriendlyName");
-        }
-        result
+    let result = get_property_string(moniker, "FriendlyName");
+    if let Ok(ref name) = result {
+        debug!(friendly_name = %name, "Device name obtained");
+    } else {
+        trace!("Failed to read FriendlyName");
     }
+    result
 }
 
 #[instrument(skip(moniker))]
-unsafe fn get_device_path(moniker: &IMoniker) -> Result<String> {
+fn get_device_path(moniker: &IMoniker) -> Result<String> {
     debug!("Reading DevicePath from property bag");
-    unsafe {
-        let result = get_property_string(moniker, "DevicePath");
-        if let Ok(ref path) = result {
-            trace!(device_path = %path, "Device path obtained");
-        } else {
-            trace!("Failed to read DevicePath");
-        }
-        result
+    let result = get_property_string(moniker, "DevicePath");
+    if let Ok(ref path) = result {
+        trace!(device_path = %path, "Device path obtained");
+    } else {
+        trace!("Failed to read DevicePath");
     }
+    result
 }
 
 #[instrument(skip(moniker))]
-unsafe fn get_property_string(moniker: &IMoniker, prop_name: &str) -> Result<String> {
+fn get_property_string(moniker: &IMoniker, prop_name: &str) -> Result<String> {
     trace!(property_name = %prop_name, "Binding moniker to property bag");
-    // Use HSTRING for property name
     use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VariantClear};
     use windows::core::HSTRING;
 
@@ -544,12 +466,10 @@ fn parse_device_instance_id(device_path: &str) -> Option<String> {
 }
 
 unsafe fn get_driver_info_from_path(device_path: &str) -> Result<DriverInfo> {
-    let device_instance_id = parse_device_instance_id(device_path).with_context(|| {
-        format!(
-            "Failed to parse device instance ID from path: {}",
-            device_path
-        )
-    })?;
+    let device_instance_id = match parse_device_instance_id(device_path) {
+        Some(id) => id,
+        None => return Ok(DriverInfo::default()),
+    };
 
     unsafe {
         let device_id_wide: Vec<u16> = device_instance_id
@@ -564,7 +484,7 @@ unsafe fn get_driver_info_from_path(device_path: &str) -> Result<DriverInfo> {
         );
 
         if cr != CR_SUCCESS {
-            anyhow::bail!("Failed to locate device node for driver info");
+            return Ok(DriverInfo::default());
         }
 
         let (driver_version, driver_date, driver_path) = get_driver_info_from_cm(devinst)
@@ -611,32 +531,69 @@ fn expand_indirect_string(s: &str) -> Option<String> {
     }
 }
 
-unsafe fn get_cm_property_string(devinst: u32, property: u32) -> Result<String> {
-    unsafe {
-        let mut buffer = vec![0u16; STRING_BUFFER_SIZE];
-        let mut buffer_len = (buffer.len() * 2) as u32;
-        let mut reg_data_type: u32 = 0;
+/// Helper to safely call Windows APIs that use UTF-16 buffers with size negotiation
+/// Handles the common pattern: call with initial buffer, resize if needed, retry
+///
+/// # Arguments
+/// * `initial_size` - Initial buffer size in u16 units (typically STRING_BUFFER_SIZE)
+/// * `call_fn` - Closure that performs the FFI call: `|buffer, len| -> result_code`
+/// * `success_check` - Closure that checks if result indicates success
+fn call_with_utf16_buffer_generic<F, R>(
+    initial_size: usize,
+    mut call_fn: F,
+    is_buffer_small: impl Fn(&R) -> bool,
+    is_success: impl Fn(&R) -> bool,
+) -> Result<String>
+where
+    F: FnMut(&mut Vec<u16>, &mut u32) -> R,
+{
+    let mut buffer = vec![0u16; initial_size];
+    let mut buffer_len = (buffer.len() * 2) as u32;
 
-        let cr = CM_Get_DevNode_Registry_PropertyW(
-            devinst,
-            property,
-            Some(&mut reg_data_type),
-            Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
-            &mut buffer_len as *mut u32,
-            0,
-        );
+    // First attempt
+    let mut result = call_fn(&mut buffer, &mut buffer_len);
 
-        if cr != CR_SUCCESS {
-            anyhow::bail!("Failed to get CM property");
-        }
+    // Resize and retry if buffer was too small
+    if is_buffer_small(&result) {
+        let new_len = (buffer_len as usize) / 2;
+        buffer.resize(new_len, 0);
+        result = call_fn(&mut buffer, &mut buffer_len);
+    }
 
-        let str_len = (buffer_len as usize / 2).saturating_sub(1);
-        if str_len > 0 {
-            let value = String::from_utf16_lossy(&buffer[..str_len]);
-            return Ok(expand_indirect_string(&value).unwrap_or(value));
-        }
+    if !is_success(&result) {
+        anyhow::bail!("Windows API call failed");
+    }
 
+    let str_len = (buffer_len as usize / 2).saturating_sub(1);
+    if str_len > 0 {
+        Ok(String::from_utf16_lossy(&buffer[..str_len]).to_string())
+    } else {
         anyhow::bail!("Empty property value")
+    }
+}
+
+unsafe fn get_cm_property_string(devinst: u32, property: u32) -> Result<String> {
+    use windows::Win32::Devices::DeviceAndDriverInstallation::*;
+
+    unsafe {
+        let mut reg_data_type: u32 = 0;
+        let value = call_with_utf16_buffer_generic(
+            STRING_BUFFER_SIZE,
+            |buffer, buffer_len| {
+                CM_Get_DevNode_Registry_PropertyW(
+                    devinst,
+                    property,
+                    Some(&mut reg_data_type),
+                    Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
+                    buffer_len,
+                    0,
+                )
+            },
+            |cr: &CONFIGRET| cr.0 == CR_BUFFER_SMALL.0,
+            |cr: &CONFIGRET| cr.0 == CR_SUCCESS.0,
+        )?;
+
+        Ok(expand_indirect_string(&value).unwrap_or(value))
     }
 }
 /// RAII guard for registry key cleanup
@@ -688,216 +645,177 @@ unsafe fn read_reg_value(
     hkey: &windows::Win32::System::Registry::HKEY,
     value_name: &str,
 ) -> Result<String> {
-    unsafe {
-        use windows::Win32::Foundation::*;
-        use windows::Win32::System::Registry::*;
+    use windows::Win32::System::Registry::*;
 
+    unsafe {
         let value_name_wide: Vec<u16> = value_name
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let mut buffer = vec![0u16; STRING_BUFFER_SIZE];
-        let mut buffer_size = (buffer.len() * 2) as u32;
 
-        let result = RegQueryValueExW(
-            *hkey,
-            PCWSTR(value_name_wide.as_ptr()),
-            None,
-            None,
-            Some(buffer.as_mut_ptr() as *mut u8),
-            Some(&mut buffer_size),
-        );
-
-        if result != ERROR_SUCCESS {
-            anyhow::bail!("Failed to read registry value '{}'", value_name);
-        }
-
-        let str_len = (buffer_size as usize / 2).saturating_sub(1);
-        let value = String::from_utf16_lossy(&buffer[..str_len]);
-
-        Ok(value)
+        call_with_utf16_buffer_generic(
+            STRING_BUFFER_SIZE,
+            |buffer, buffer_len| {
+                RegQueryValueExW(
+                    *hkey,
+                    PCWSTR(value_name_wide.as_ptr()),
+                    None,
+                    None,
+                    Some(buffer.as_mut_ptr() as *mut u8),
+                    Some(buffer_len),
+                )
+            },
+            |err: &WIN32_ERROR| err.0 == ERROR_MORE_DATA.0,
+            |err: &WIN32_ERROR| err.0 == ERROR_SUCCESS.0,
+        )
     }
 }
 
-#[instrument(skip(moniker))]
+fn get_properties<T, IFace, GetRangeFn, GetFn>(
+    moniker: &IMoniker,
+    iface_cast: fn(IBaseFilter) -> Result<IFace>,
+    properties: &[T],
+    get_range: GetRangeFn,
+    get_value: GetFn,
+    property_type: PropertyType,
+) -> Result<Vec<PropertyInfo>>
+where
+    T: Copy + ToString + Into<i32>,
+    IFace: Clone,
+    GetRangeFn: Fn(
+        &IFace,
+        i32,
+        &mut i32,
+        &mut i32,
+        &mut i32,
+        &mut i32,
+        &mut i32,
+    ) -> windows::core::Result<()>,
+    GetFn: Fn(&IFace, i32, &mut i32, &mut i32) -> windows::core::Result<()>,
+{
+    debug!("Binding moniker to IBaseFilter");
+    let filter: IBaseFilter =
+        unsafe { moniker.BindToObject(None, None) }.context("Failed to bind to IBaseFilter")?;
+    let iface = iface_cast(filter)?;
+    debug!("Interface obtained");
+
+    let mut capabilities = Vec::new();
+    trace!(property_count = properties.len(), "Enumerating properties");
+    for property in properties {
+        let prop_id: i32 = (*property).into();
+        let name = property.to_string();
+        let mut min = 0;
+        let mut max = 0;
+        let mut step = 0;
+        let mut default = 0;
+        let mut caps = 0;
+
+        if get_range(
+            &iface,
+            prop_id,
+            &mut min,
+            &mut max,
+            &mut step,
+            &mut default,
+            &mut caps,
+        )
+        .is_ok()
+        {
+            trace!(property = %name, min, max, step, default, caps, "GetRange successful");
+            let mut value = 0;
+            let mut flags_val = 0;
+            let _is_auto_mode = if get_value(&iface, prop_id, &mut value, &mut flags_val).is_ok() {
+                trace!(property = %name, value, flags = flags_val, "Get successful");
+                // If auto mode is enabled, record it (value formatting done on demand in UI)
+                match property_type {
+                    PropertyType::VideoProcAmp => {
+                        (caps & VideoProcAmp_Flags_Auto.0 != 0)
+                            && (flags_val & VideoProcAmp_Flags_Auto.0 != 0)
+                    }
+                    PropertyType::CameraControl => {
+                        (caps & CameraControl_Flags_Auto.0 != 0)
+                            && (flags_val & CameraControl_Flags_Auto.0 != 0)
+                    }
+                }
+            } else {
+                false
+            };
+
+            capabilities.push(PropertyInfo {
+                name: name.to_string(),
+                min: Some(min),
+                max: Some(max),
+                step: Some(step),
+                default: Some(default),
+                caps: Some(caps),
+                current: Some(value),
+                capabilities: format_capabilities(caps),
+                property_type,
+            });
+        } else {
+            trace!(property = %name, "GetRange failed - property not supported");
+        }
+    }
+    debug!(
+        property_count = capabilities.len(),
+        "Property enumeration complete"
+    );
+    Ok(capabilities)
+}
+
 unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
-    debug!("Binding moniker to IBaseFilter");
-    let filter: IBaseFilter = unsafe { moniker.BindToObject(None, None) }
-        .context("Failed to bind to IBaseFilter for VideoProcAmp")?;
-    trace!("Casting IBaseFilter to IAMVideoProcAmp");
-    let video_proc_amp: IAMVideoProcAmp = filter
-        .cast()
-        .context("Failed to get IAMVideoProcAmp interface")?;
-    debug!("IAMVideoProcAmp interface obtained");
-
-    let properties = [
-        // Basic image controls
-        VideoProcAmpProperty::Brightness,
-        VideoProcAmpProperty::Contrast,
-        VideoProcAmpProperty::Saturation,
-        // Color controls
-        VideoProcAmpProperty::Hue,
-        VideoProcAmpProperty::WhiteBalance,
-        VideoProcAmpProperty::WhiteBalanceComponent,
-        VideoProcAmpProperty::ColorEnable,
-        VideoProcAmpProperty::Gamma,
-        // Advanced controls
-        VideoProcAmpProperty::Sharpness,
-        VideoProcAmpProperty::BacklightCompensation,
-        VideoProcAmpProperty::Gain,
-        VideoProcAmpProperty::PowerlineFrequency,
-        VideoProcAmpProperty::DigitalMultiplier,
-        VideoProcAmpProperty::DigitalMultiplierLimit,
-    ];
-
-    let mut capabilities = Vec::new();
-
-    trace!(
-        property_count = properties.len(),
-        "Enumerating VideoProcAmp properties"
-    );
-    for property in properties {
-        let prop_id: i32 = property.into();
-        let name = property.to_string();
-        let mut min = 0;
-        let mut max = 0;
-        let mut step = 0;
-        let mut default = 0;
-        let mut caps = 0;
-
-        if unsafe {
-            video_proc_amp.GetRange(
-                prop_id,
-                &mut min,
-                &mut max,
-                &mut step,
-                &mut default,
-                &mut caps,
-            )
-        }
-        .is_ok()
-        {
-            trace!(property = %name, min, max, step, default, caps, "GetRange successful");
-            let mut value = 0;
-            let mut flags_val = 0;
-            let current_formatted =
-                if unsafe { video_proc_amp.Get(prop_id, &mut value, &mut flags_val) }.is_ok() {
-                    trace!(property = %name, value, flags = flags_val, "Get successful");
-                    // If auto mode is enabled, return "Auto" as the current value
-                    if (caps & CAPABILITY_AUTO != 0) && (flags_val & CAPABILITY_AUTO != 0) {
-                        Some("Auto".to_string())
-                    } else {
-                        Some(format_property_value(&name, value))
-                    }
-                } else {
-                    None
-                };
-
-            capabilities.push(PropertyInfo {
-                name: name.to_string(),
-                supported_values: get_supported_values(&name, min, max, caps),
-                default: format_property_value(&name, default),
-                current: current_formatted,
-                capabilities: format_capabilities(caps),
-                property_type: PropertyType::VideoProcAmp,
-            });
-        } else {
-            trace!(property = %name, "GetRange failed - property not supported");
-        }
-    }
-
-    debug!(
-        property_count = capabilities.len(),
-        "VideoProcAmp property enumeration complete"
-    );
-    Ok(capabilities)
+    get_properties(
+        moniker,
+        |f| f.cast().context("Failed to get IAMVideoProcAmp interface"),
+        &[
+            // ...existing code...
+            VideoProcAmpProperty::Brightness,
+            VideoProcAmpProperty::Contrast,
+            VideoProcAmpProperty::Saturation,
+            VideoProcAmpProperty::Hue,
+            VideoProcAmpProperty::WhiteBalance,
+            VideoProcAmpProperty::WhiteBalanceComponent,
+            VideoProcAmpProperty::ColorEnable,
+            VideoProcAmpProperty::Gamma,
+            VideoProcAmpProperty::Sharpness,
+            VideoProcAmpProperty::BacklightCompensation,
+            VideoProcAmpProperty::Gain,
+            VideoProcAmpProperty::PowerlineFrequency,
+            VideoProcAmpProperty::DigitalMultiplier,
+            VideoProcAmpProperty::DigitalMultiplierLimit,
+        ],
+        |iface: &IAMVideoProcAmp, prop_id, min, max, step, default, caps| unsafe {
+            iface.GetRange(prop_id, min, max, step, default, caps)
+        },
+        |iface: &IAMVideoProcAmp, prop_id, value, flags| unsafe {
+            iface.Get(prop_id, value, flags)
+        },
+        PropertyType::VideoProcAmp,
+    )
 }
 
-#[instrument(skip(moniker))]
 unsafe fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
-    debug!("Binding moniker to IBaseFilter");
-    let filter: IBaseFilter = unsafe { moniker.BindToObject(None, None) }
-        .context("Failed to bind to IBaseFilter for CameraControl")?;
-    trace!("Casting IBaseFilter to IAMCameraControl");
-    let camera_control: IAMCameraControl = filter
-        .cast()
-        .context("Failed to get IAMCameraControl interface")?;
-    debug!("IAMCameraControl interface obtained");
-
-    let properties = [
-        // Primary image controls
-        CameraControlProperty::Exposure,
-        CameraControlProperty::Focus,
-        // Mechanical positioning
-        CameraControlProperty::Pan,
-        CameraControlProperty::Tilt,
-        CameraControlProperty::Roll,
-        CameraControlProperty::Zoom,
-        // Aperture
-        CameraControlProperty::Iris,
-    ];
-
-    let mut capabilities = Vec::new();
-
-    trace!(
-        property_count = properties.len(),
-        "Enumerating CameraControl properties"
-    );
-    for property in properties {
-        let prop_id: i32 = property.into();
-        let name = property.to_string();
-        let mut min = 0;
-        let mut max = 0;
-        let mut step = 0;
-        let mut default = 0;
-        let mut caps = 0;
-
-        if unsafe {
-            camera_control.GetRange(
-                prop_id,
-                &mut min,
-                &mut max,
-                &mut step,
-                &mut default,
-                &mut caps,
-            )
-        }
-        .is_ok()
-        {
-            trace!(property = %name, min, max, step, default, caps, "GetRange successful");
-            let mut value = 0;
-            let mut flags_val = 0;
-            let current_formatted =
-                if unsafe { camera_control.Get(prop_id, &mut value, &mut flags_val) }.is_ok() {
-                    trace!(property = %name, value, flags = flags_val, "Get successful");
-                    // If auto mode is enabled, return "Auto" as the current value
-                    if (caps & CAPABILITY_AUTO != 0) && (flags_val & CAPABILITY_AUTO != 0) {
-                        Some("Auto".to_string())
-                    } else {
-                        Some(format_property_value(&name, value))
-                    }
-                } else {
-                    None
-                };
-
-            capabilities.push(PropertyInfo {
-                name: name.to_string(),
-                supported_values: get_supported_values(&name, min, max, caps),
-                default: format_property_value(&name, default),
-                current: current_formatted,
-                capabilities: format_capabilities(caps),
-                property_type: PropertyType::CameraControl,
-            });
-        } else {
-            trace!(property = %name, "GetRange failed - property not supported");
-        }
-    }
-
-    debug!(
-        property_count = capabilities.len(),
-        "CameraControl property enumeration complete"
-    );
-    Ok(capabilities)
+    get_properties(
+        moniker,
+        |f| f.cast().context("Failed to get IAMCameraControl interface"),
+        &[
+            // ...existing code...
+            CameraControlProperty::Exposure,
+            CameraControlProperty::Focus,
+            CameraControlProperty::Pan,
+            CameraControlProperty::Tilt,
+            CameraControlProperty::Roll,
+            CameraControlProperty::Zoom,
+            CameraControlProperty::Iris,
+        ],
+        |iface: &IAMCameraControl, prop_id, min, max, step, default, caps| unsafe {
+            iface.GetRange(prop_id, min, max, step, default, caps)
+        },
+        |iface: &IAMCameraControl, prop_id, value, flags| unsafe {
+            iface.Get(prop_id, value, flags)
+        },
+        PropertyType::CameraControl,
+    )
 }
 
 /// Find a device moniker by its DirectShow device path
@@ -958,9 +876,9 @@ pub fn set_video_proc_amp_property(
         .context("Failed to get VideoProcAmp interface")?;
 
     let flags = if auto {
-        CAPABILITY_AUTO
+        VideoProcAmp_Flags_Auto.0
     } else {
-        CAPABILITY_MANUAL
+        VideoProcAmp_Flags_Manual.0
     };
     unsafe { video_proc_amp.Set(property.into(), value, flags) }.with_context(|| {
         format!(
@@ -994,9 +912,9 @@ pub fn set_camera_control_property(
         .context("Failed to get CameraControl interface")?;
 
     let flags = if auto {
-        CAPABILITY_AUTO
+        CameraControl_Flags_Auto.0
     } else {
-        CAPABILITY_MANUAL
+        CameraControl_Flags_Manual.0
     };
     unsafe { camera_control.Set(property.into(), value, flags) }.with_context(|| {
         format!(
@@ -1051,45 +969,66 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
     })?;
 
     // Validate value is within safe range (skip validation for auto mode)
-    if !auto_mode {
-        // Parse the supported_values to extract min/max range
-        if let Some((min, max)) = parse_value_range(&prop_info.supported_values)
-            && (numeric_value < min || numeric_value > max)
-        {
-            anyhow::bail!(
-                "Value {} for property '{}' is outside the safe range {} (device reports: {})",
-                numeric_value,
-                property_name,
-                prop_info.supported_values,
-                prop_info.supported_values
-            );
-        }
+    if !auto_mode
+        && let (Some(min), Some(max)) = (prop_info.min, prop_info.max)
+        && (numeric_value < min || numeric_value > max)
+    {
+        anyhow::bail!(
+            "Value {} for property '{}' is outside the safe range {}-{} (device reports: min={}, max={})",
+            numeric_value,
+            property_name,
+            min,
+            max,
+            min,
+            max
+        );
     }
 
     match property_type {
         PropertyType::VideoProcAmp => {
-            let prop_enum: VideoProcAmpProperty = property_name.parse()?;
+            let prop_enum: VideoProcAmpProperty = property_name
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Unknown VideoProcAmp property: {}", property_name))?;
             set_video_proc_amp_property(device, prop_enum, numeric_value, auto_mode)
         }
         PropertyType::CameraControl => {
-            let prop_enum: CameraControlProperty = property_name.parse()?;
+            let prop_enum: CameraControlProperty = property_name.parse().map_err(|_| {
+                anyhow::anyhow!("Unknown CameraControl property: {}", property_name)
+            })?;
             set_camera_control_property(device, prop_enum, numeric_value, auto_mode)
         }
     }
 }
 
-/// Parse the supported values string to extract min/max range
-/// Returns None if the format is not a simple range (e.g., for enumerated values)
-fn parse_value_range(supported_values: &str) -> Option<(i32, i32)> {
-    // Check if it's a range format like "0-255" or "0-255, Auto"
-    let range_part = supported_values.split(',').next()?.trim();
-
-    let parts: Vec<&str> = range_part.split('-').collect();
-    if parts.len() == 2 {
-        let min = parts[0].trim().parse::<i32>().ok()?;
-        let max = parts[1].trim().parse::<i32>().ok()?;
-        Some((min, max))
-    } else {
-        None
+/// Generate enum mapping for special properties
+fn get_enum_mapping(property_name: &str, min: i32, max: i32) -> Option<Vec<(i32, String)>> {
+    match property_name {
+        "PowerlineFrequency" => {
+            let mut mapping = vec![];
+            if min <= 0 && max >= 0 {
+                mapping.push((0, "Disabled".to_string()));
+            }
+            if min <= 1 && max >= 1 {
+                mapping.push((1, "50Hz".to_string()));
+            }
+            if min <= 2 && max >= 2 {
+                mapping.push((2, "60Hz".to_string()));
+            }
+            if min <= 3 && max >= 3 {
+                mapping.push((3, "Auto".to_string()));
+            }
+            Some(mapping)
+        }
+        "ColorEnable" | "BacklightCompensation" => {
+            let mut mapping = vec![];
+            if min <= 0 && max >= 0 {
+                mapping.push((0, "Off".to_string()));
+            }
+            if min <= 1 && max >= 1 {
+                mapping.push((1, "On".to_string()));
+            }
+            Some(mapping)
+        }
+        _ => None,
     }
 }

@@ -219,9 +219,16 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
             (
                 prop.name.clone(),
                 PropertyOutput {
-                    value: prop.current.clone(),
-                    default: Some(prop.default.clone()),
-                    supported_values: Some(prop.supported_values.clone()),
+                    value: prop
+                        .current
+                        .map(|v| webcam::format_property_value(&prop.name, v)),
+                    default: prop
+                        .default
+                        .map(|v| webcam::format_property_value(&prop.name, v)),
+                    supported_values: prop
+                        .min
+                        .and_then(|min| prop.max.map(|max| (min, max)))
+                        .and_then(|(min, max)| webcam::build_enum_display(&prop.name, min, max)),
                 },
             )
         })
@@ -403,23 +410,33 @@ fn set_property(
 
         // Get list of properties to set
         let properties_to_set: Vec<(&str, String)> = if reset_all {
-            // Collect all properties with their default values
+            // Collect all properties with their default values, formatted as strings
             device
                 .video_proc_amp_properties
                 .iter()
                 .chain(&device.camera_control_properties)
-                .map(|p| (p.name.as_str(), p.default.clone()))
+                .map(|p| {
+                    let val = p
+                        .default
+                        .map(|v| webcam::format_property_value(&p.name, v))
+                        .unwrap_or_else(|| "".to_string());
+                    (p.name.as_str(), val)
+                })
                 .collect()
         } else {
             // Single property
             let value_to_set = if use_default {
-                // Find the property to get its default value
+                // Find the property to get its default value, formatted as string
                 device
                     .video_proc_amp_properties
                     .iter()
                     .chain(&device.camera_control_properties)
                     .find(|p| p.name.eq_ignore_ascii_case(&property))
-                    .map(|p| p.default.clone())
+                    .map(|p| {
+                        p.default
+                            .map(|v| webcam::format_property_value(&p.name, v))
+                            .unwrap_or_else(|| "".to_string())
+                    })
                     .ok_or_else(|| {
                         anyhow::anyhow!(
                             "Property '{}' not found on device '{}'",

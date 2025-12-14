@@ -1,0 +1,141 @@
+name: Release
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Build
+      run: cargo build --verbose
+    
+    - name: Run tests
+      run: cargo test --verbose
+  
+  create-release:
+    name: Create Release
+    needs: build
+    runs-on: windows-latest
+    environment: release
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    
+    - name: Configure Git
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Get version from Cargo.toml
+      id: version
+      shell: pwsh
+      run: |
+        $content = Get-Content Cargo.toml -Raw
+        $content -match 'version = "([^"]+)"' | Out-Null
+        $version = $matches[1]
+        Write-Output "VERSION=$version" >> $env:GITHUB_OUTPUT
+        Write-Output "Version: $version"
+    
+    - name: Get last release version
+      id: last_version
+      shell: pwsh
+      run: |
+        try {
+          $response = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases/latest" `
+            -Headers @{ Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}" } `
+            -ErrorAction Stop
+          $lastTag = $response.tag_name -replace '^v', ''
+          Write-Output "LAST_VERSION=$lastTag" >> $env:GITHUB_OUTPUT
+          Write-Output "Last version: $lastTag"
+        } catch {
+          Write-Output "LAST_VERSION=0.0.0" >> $env:GITHUB_OUTPUT
+          Write-Output "No previous releases found"
+        }
+    
+    - name: Verify version was updated
+      shell: pwsh
+      run: |
+        $currentVersion = "${{ steps.version.outputs.VERSION }}"
+        $lastVersion = "${{ steps.last_version.outputs.LAST_VERSION }}"
+        
+        if ($currentVersion -eq $lastVersion) {
+          Write-Error "Version in Cargo.toml ($currentVersion) has not been updated from the last release ($lastVersion). Please bump the version."
+          exit 1
+        }
+        Write-Output "Version updated from $lastVersion to $currentVersion ✓"
+    
+    - name: Check if tag already exists
+      id: check_tag
+      shell: pwsh
+      run: |
+        $tag = "v${{ steps.version.outputs.VERSION }}"
+        if (git rev-parse $tag 2>$null) {
+          Write-Output "TAG_EXISTS=true" >> $env:GITHUB_OUTPUT
+          Write-Output "Tag $tag already exists"
+        } else {
+          Write-Output "TAG_EXISTS=false" >> $env:GITHUB_OUTPUT
+          Write-Output "Tag $tag does not exist, will create"
+        }
+    
+    - name: Create git tag
+      if: steps.check_tag.outputs.TAG_EXISTS == 'false'
+      run: |
+        git tag -a v${{ steps.version.outputs.VERSION }} -m "Release v${{ steps.version.outputs.VERSION }}"
+        git push origin v${{ steps.version.outputs.VERSION }}
+    
+    - name: Build release binary
+      run: cargo build --release
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.VERSION }}
+        draft: false
+        prerelease: false
+        files: |
+          target/release/wincamcfg.exe
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
