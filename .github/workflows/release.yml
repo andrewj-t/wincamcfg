@@ -131,6 +131,54 @@ jobs:
         git tag -a v${{ steps.version.outputs.VERSION }} -m "Release v${{ steps.version.outputs.VERSION }}"
         git push origin v${{ steps.version.outputs.VERSION }}
     
+    - name: Update CHANGELOG.md
+      if: steps.check_tag.outputs.TAG_EXISTS == 'false'
+      run: |
+        $version = "${{ steps.version.outputs.VERSION }}"
+        $changelogPath = "CHANGELOG.md"
+        $changelog = Get-Content $changelogPath -Raw
+        
+        $versionPattern = [regex]::Escape($version)
+        if ($changelog -match "\[$versionPattern\]") {
+          Write-Output "Version $version already in CHANGELOG.md"
+          exit 0
+        }
+        
+        $lastVersion = "${{ steps.last_version.outputs.LAST_VERSION }}"
+        if ($lastVersion -eq "0.0.0") {
+          $gitLog = git log --oneline --pretty="- %s" -- src/ Cargo.toml build.rs
+        } else {
+          $gitLog = git log "v$lastVersion..HEAD" --oneline --pretty="- %s" -- src/ Cargo.toml build.rs
+        }
+        
+        $today = Get-Date -Format "yyyy-MM-dd"
+        $newEntry = "## [$version] - $today`n`n### Changed`n$gitLog`n"
+        
+        $lines = $changelog -split "`n"
+        $insertIndex = 0
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+          if ($lines[$i] -match "^## \[") {
+            $insertIndex = $i
+            break
+          }
+        }
+        
+        $updatedChangelog = (($lines[0..($insertIndex - 1)] | Join-String -Separator "`n")) + "`n$newEntry" + (($lines[$insertIndex..($lines.Count - 1)] | Join-String -Separator "`n"))
+        Set-Content $changelogPath $updatedChangelog -Encoding UTF8
+        
+        Write-Output "Updated CHANGELOG.md with version $version"
+    
+    - name: Commit changelog updates
+      if: steps.check_tag.outputs.TAG_EXISTS == 'false'
+      run: |
+        if (git diff --quiet) {
+          Write-Output "No changelog changes to commit"
+        } else {
+          git add CHANGELOG.md
+          git commit -m "docs: update changelog for v${{ steps.version.outputs.VERSION }}"
+          git push origin HEAD:main
+        }
+    
     - name: Build release binary
       run: cargo build --release
     
