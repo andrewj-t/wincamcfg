@@ -205,7 +205,7 @@ jobs:
       run: cargo install cargo-sbom
     
     - name: Generate SBOM
-      run: cargo sbom --output spdx-json > sbom.spdx.json
+      run: cargo sbom --output-format spdx-json > sbom.spdx.json
     
     - name: Capture SBOM information
       id: sbom_info
