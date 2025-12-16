@@ -3,6 +3,8 @@ name: Release
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
+  attestations: write
 
 on:
   push:
@@ -58,6 +60,15 @@ jobs:
     needs: build
     runs-on: windows-latest
     environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    
+    outputs:
+      BINARY_PATH: ${{ steps.build_info.outputs.BINARY_PATH }}
+      SBOM_PATH: ${{ steps.sbom_info.outputs.SBOM_PATH }}
+      VERSION: ${{ steps.version.outputs.VERSION }}
     
     steps:
     - name: Checkout code
@@ -182,11 +193,38 @@ jobs:
     - name: Build release binary
       run: cargo build --release
     
+    - name: Capture build information
+      id: build_info
+      shell: pwsh
+      run: |
+        $binaryPath = Resolve-Path 'target/release/wincamcfg.exe'
+        Write-Output "BINARY_PATH=$binaryPath" >> $env:GITHUB_OUTPUT
+        Write-Output "Binary path: $binaryPath"
+    
     - name: Install cargo-sbom
       run: cargo install cargo-sbom
     
     - name: Generate SBOM
       run: cargo sbom --output spdx-json > sbom.spdx.json
+    
+    - name: Capture SBOM information
+      id: sbom_info
+      shell: pwsh
+      run: |
+        $sbomPath = Resolve-Path 'sbom.spdx.json'
+        Write-Output "SBOM_PATH=$sbomPath" >> $env:GITHUB_OUTPUT
+        Write-Output "SBOM path: $sbomPath"
+    
+    - name: Generate artifact attestation
+      uses: actions/attest-build-provenance@v1
+      with:
+        subject-path: 'target/release/wincamcfg.exe'
+    
+    - name: Generate SBOM attestation
+      uses: actions/attest-sbom@v1
+      with:
+        subject-path: 'target/release/wincamcfg.exe'
+        sbom-path: 'sbom.spdx.json'
     
     - name: Create Release
       uses: softprops/action-gh-release@v1
