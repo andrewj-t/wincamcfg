@@ -351,7 +351,7 @@ jobs:
         subject-path: 'wincamcfg.exe'
     
     - name: Generate SBOM attestation
-      uses: actions/attest-sbom@v1
+      uses: actions/attest-sbom@v3
       with:
         subject-path: 'wincamcfg.exe'
         sbom-path: 'sbom.spdx.json'
