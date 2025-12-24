@@ -6,6 +6,10 @@ permissions:
   id-token: write
   attestations: write
 
+concurrency:
+  group: release-${{ github.run_id }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:
@@ -23,10 +27,16 @@ jobs:
   build:
     name: Build and Test
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      last_version: ${{ steps.last_version.outputs.LAST_VERSION }}
+      binary_path: ${{ steps.build_info.outputs.BINARY_PATH }}
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -54,35 +64,6 @@ jobs:
     
     - name: Run tests
       run: cargo test --verbose
-  
-  create-release:
-    name: Create Release
-    needs: build
-    runs-on: windows-latest
-    environment: release
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    
-    outputs:
-      BINARY_PATH: ${{ steps.build_info.outputs.BINARY_PATH }}
-      SBOM_PATH: ${{ steps.sbom_info.outputs.SBOM_PATH }}
-      VERSION: ${{ steps.version.outputs.VERSION }}
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-      with:
-        fetch-depth: 0
-    
-    - name: Configure Git
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
     
     - name: Get version from Cargo.toml
       id: version
@@ -110,23 +91,57 @@ jobs:
           Write-Output "No previous releases found"
         }
     
-    - name: Verify version was updated
+    - name: Build release binary
+      run: cargo build --release
+    
+    - name: Capture build information
+      id: build_info
       shell: pwsh
       run: |
-        $currentVersion = "${{ steps.version.outputs.VERSION }}"
-        $lastVersion = "${{ steps.last_version.outputs.LAST_VERSION }}"
+        $binaryPath = Resolve-Path 'target/release/wincamcfg.exe'
+        Write-Output "BINARY_PATH=$binaryPath" >> $env:GITHUB_OUTPUT
+        Write-Output "Binary path: $binaryPath"
+    
+    - name: Upload binary artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: release-binary
+        path: target/release/wincamcfg.exe
+
+  version-check:
+    name: Verify Version Updated
+    needs: build
+    runs-on: windows-latest
+    
+    steps:
+    - name: Check version bump
+      shell: pwsh
+      run: |
+        $currentVersion = "${{ needs.build.outputs.version }}"
+        $lastVersion = "${{ needs.build.outputs.last_version }}"
         
         if ($currentVersion -eq $lastVersion) {
           Write-Error "Version in Cargo.toml ($currentVersion) has not been updated from the last release ($lastVersion). Please bump the version."
           exit 1
         }
         Write-Output "Version updated from $lastVersion to $currentVersion ✓"
+
+  tag-check:
+    name: Check Git Tag
+    needs: build
+    runs-on: windows-latest
+    outputs:
+      tag_exists: ${{ steps.check_tag.outputs.TAG_EXISTS }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
     
     - name: Check if tag already exists
       id: check_tag
       shell: pwsh
       run: |
-        $tag = "v${{ steps.version.outputs.VERSION }}"
+        $tag = "v${{ needs.build.outputs.version }}"
         $tagExists = @(git tag -l $tag).Count -gt 0
         if ($tagExists) {
           Write-Output "TAG_EXISTS=true" >> $env:GITHUB_OUTPUT
@@ -135,17 +150,29 @@ jobs:
           Write-Output "TAG_EXISTS=false" >> $env:GITHUB_OUTPUT
           Write-Output "Tag $tag does not exist, will create"
         }
+
+  changelog:
+    name: Update Changelog
+    needs: [build, version-check, tag-check]
+    if: needs.tag-check.outputs.tag_exists == 'false'
+    runs-on: windows-latest
     
-    - name: Create git tag
-      if: steps.check_tag.outputs.TAG_EXISTS == 'false'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    
+    - name: Configure Git
       run: |
-        git tag -a v${{ steps.version.outputs.VERSION }} -m "Release v${{ steps.version.outputs.VERSION }}"
-        git push origin v${{ steps.version.outputs.VERSION }}
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
     
     - name: Update CHANGELOG.md
-      if: steps.check_tag.outputs.TAG_EXISTS == 'false'
+      shell: pwsh
       run: |
-        $version = "${{ steps.version.outputs.VERSION }}"
+        $version = "${{ needs.build.outputs.version }}"
+        $lastVersion = "${{ needs.build.outputs.last_version }}"
         $changelogPath = "CHANGELOG.md"
         $changelog = Get-Content $changelogPath -Raw
         
@@ -155,7 +182,6 @@ jobs:
           exit 0
         }
         
-        $lastVersion = "${{ steps.last_version.outputs.LAST_VERSION }}"
         if ($lastVersion -eq "0.0.0") {
           $gitLog = git log --oneline --pretty="- %s" -- src/ Cargo.toml build.rs
         } else {
@@ -179,62 +205,184 @@ jobs:
         
         Write-Output "Updated CHANGELOG.md with version $version"
     
-    - name: Commit changelog updates
-      if: steps.check_tag.outputs.TAG_EXISTS == 'false'
+    - name: Commit and push changelog
+      shell: pwsh
       run: |
         if (git diff --quiet) {
           Write-Output "No changelog changes to commit"
         } else {
           git add CHANGELOG.md
-          git commit -m "docs: update changelog for v${{ steps.version.outputs.VERSION }}"
+          git commit -m "docs: update changelog for v${{ needs.build.outputs.version }}"
           git push origin HEAD:main
         }
+
+  create-tag:
+    name: Create Git Tag
+    needs: [build, changelog]
+    if: needs.tag-check.outputs.tag_exists == 'false'
+    runs-on: windows-latest
     
-    - name: Build release binary
-      run: cargo build --release
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
     
-    - name: Capture build information
-      id: build_info
-      shell: pwsh
+    - name: Configure Git
       run: |
-        $binaryPath = Resolve-Path 'target/release/wincamcfg.exe'
-        Write-Output "BINARY_PATH=$binaryPath" >> $env:GITHUB_OUTPUT
-        Write-Output "Binary path: $binaryPath"
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+    
+    - name: Create and push git tag
+      run: |
+        git tag -a v${{ needs.build.outputs.version }} -m "Release v${{ needs.build.outputs.version }}"
+        git push origin v${{ needs.build.outputs.version }}
+
+  sbom-generation:
+    name: Generate SBOMs
+    needs: build
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Install cargo-sbom
-      run: cargo install cargo-sbom
+      run: cargo install cargo-sbom --locked
     
-    - name: Generate SBOM
-      run: cargo sbom --output-format spdx-json > sbom.spdx.json
+    - name: Generate SBOM (SPDX)
+      run: cargo sbom --output-format spdx_json_2_3 > sbom.spdx.json
     
-    - name: Capture SBOM information
-      id: sbom_info
+    - name: Generate SBOM (CycloneDX)
+      run: cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cyclonedx.json
+    
+    - name: Upload SBOM artifacts
+      uses: actions/upload-artifact@v5
+      with:
+        name: sbom-artifacts
+        path: sbom*.json
+
+  reproducible-build:
+    name: Reproducible Build Verification
+    needs: build
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: First build
+      run: |
+        cargo build --release
+        Copy-Item 'target/release/wincamcfg.exe' 'wincamcfg-1.exe'
+    
+    - name: Clean and rebuild
+      run: |
+        cargo clean
+        cargo build --release
+        Copy-Item 'target/release/wincamcfg.exe' 'wincamcfg-2.exe'
+    
+    - name: Compare builds
       shell: pwsh
       run: |
-        $sbomPath = Resolve-Path 'sbom.spdx.json'
-        Write-Output "SBOM_PATH=$sbomPath" >> $env:GITHUB_OUTPUT
-        Write-Output "SBOM path: $sbomPath"
+        $file1 = Get-FileHash 'wincamcfg-1.exe' -Algorithm SHA256
+        $file2 = Get-FileHash 'wincamcfg-2.exe' -Algorithm SHA256
+        
+        Write-Output "Build 1 SHA256: $($file1.Hash)"
+        Write-Output "Build 2 SHA256: $($file2.Hash)"
+        
+        if ($file1.Hash -eq $file2.Hash) {
+          Write-Output "✓ Build is reproducible"
+        } else {
+          Write-Error "✗ Build is NOT reproducible"
+          exit 1
+        }
+
+  attestations:
+    name: Generate Attestations
+    needs: [build, sbom-generation]
+    runs-on: windows-latest
+    permissions:
+      id-token: write
+      attestations: write
+    
+    steps:
+    - name: Download binary artifact
+      uses: actions/download-artifact@v5
+      with:
+        name: release-binary
+    
+    - name: Download SBOM artifacts
+      uses: actions/download-artifact@v5
+      with:
+        name: sbom-artifacts
     
     - name: Generate artifact attestation
       uses: actions/attest-build-provenance@v1
       with:
-        subject-path: 'target/release/wincamcfg.exe'
+        subject-path: 'wincamcfg.exe'
     
     - name: Generate SBOM attestation
       uses: actions/attest-sbom@v1
       with:
-        subject-path: 'target/release/wincamcfg.exe'
+        subject-path: 'wincamcfg.exe'
         sbom-path: 'sbom.spdx.json'
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build, create-tag, sbom-generation, attestations, reproducible-build]
+    if: needs.tag-check.outputs.tag_exists == 'false'
+    runs-on: windows-latest
+    
+    steps:
+    - name: Download binary artifact
+      uses: actions/download-artifact@v5
+      with:
+        name: release-binary
+    
+    - name: Download SBOM artifacts
+      uses: actions/download-artifact@v5
+      with:
+        name: sbom-artifacts
     
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: v${{ steps.version.outputs.VERSION }}
+        tag_name: v${{ needs.build.outputs.version }}
         draft: false
         prerelease: false
         files: |
-          target/release/wincamcfg.exe
+          wincamcfg.exe
           sbom.spdx.json
+          sbom.cyclonedx.json
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
