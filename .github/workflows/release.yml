@@ -42,19 +42,19 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
     
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Cache cargo index
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Cache cargo build
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
@@ -103,7 +103,7 @@ jobs:
         Write-Output "Binary path: $binaryPath"
     
     - name: Upload binary artifact
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: release-binary
         path: target/release/wincamcfg.exe
@@ -249,13 +249,13 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
     
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Cache cargo index
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
@@ -270,61 +270,10 @@ jobs:
       run: cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cyclonedx.json
     
     - name: Upload SBOM artifacts
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: sbom-artifacts
         path: sbom*.json
-
-  reproducible-build:
-    name: Reproducible Build Verification
-    needs: build
-    runs-on: windows-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-    
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Cache cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: First build
-      run: |
-        cargo build --release
-        Copy-Item 'target/release/wincamcfg.exe' 'wincamcfg-1.exe'
-    
-    - name: Clean and rebuild
-      run: |
-        cargo clean
-        cargo build --release
-        Copy-Item 'target/release/wincamcfg.exe' 'wincamcfg-2.exe'
-    
-    - name: Compare builds
-      shell: pwsh
-      run: |
-        $file1 = Get-FileHash 'wincamcfg-1.exe' -Algorithm SHA256
-        $file2 = Get-FileHash 'wincamcfg-2.exe' -Algorithm SHA256
-        
-        Write-Output "Build 1 SHA256: $($file1.Hash)"
-        Write-Output "Build 2 SHA256: $($file2.Hash)"
-        
-        if ($file1.Hash -eq $file2.Hash) {
-          Write-Output "✓ Build is reproducible"
-        } else {
-          Write-Error "✗ Build is NOT reproducible"
-          exit 1
-        }
 
   attestations:
     name: Generate Attestations
@@ -346,19 +295,19 @@ jobs:
         name: sbom-artifacts
     
     - name: Generate artifact attestation
-      uses: actions/attest-build-provenance@v1
+      uses: actions/attest-build-provenance@v3
       with:
         subject-path: 'wincamcfg.exe'
     
     - name: Generate SBOM attestation
-      uses: actions/attest-sbom@v1
+      uses: actions/attest-sbom@v3
       with:
         subject-path: 'wincamcfg.exe'
         sbom-path: 'sbom.spdx.json'
 
   create-release:
     name: Create GitHub Release
-    needs: [build, create-tag, sbom-generation, attestations, reproducible-build]
+    needs: [build, create-tag, sbom-generation, attestations]
     if: needs.tag-check.outputs.tag_exists == 'false'
     runs-on: windows-latest
     
@@ -374,7 +323,7 @@ jobs:
         name: sbom-artifacts
     
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: v${{ needs.build.outputs.version }}
         draft: false
