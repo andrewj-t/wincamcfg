@@ -1,6 +1,6 @@
 [package]
 name = "wincamcfg"
-version = "0.2.2"
+version = "0.2.4"
 edition = "2024"
 description = "A command line utility for managing webcam configuration on windows"
 license = "MIT"
@@ -15,7 +15,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_with = "3.11"
 strum = { version = "0.27", features = ["derive"] }
-tracing = "0.1"
+tracing = "^0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 windows = { version = ">=0.59, <=0.62", features = [
     "Win32_Foundation",
