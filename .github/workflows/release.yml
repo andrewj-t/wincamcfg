@@ -277,13 +277,18 @@ jobs:
 
   attestations:
     name: Generate Attestations
-    needs: [build, sbom-generation]
+    needs: [build, sbom-generation, create-tag]
     runs-on: windows-latest
     permissions:
       id-token: write
       attestations: write
     
     steps:
+    - name: Checkout code at tag
+      uses: actions/checkout@v6
+      with:
+        ref: v${{ needs.build.outputs.version }}
+    
     - name: Download binary artifact
       uses: actions/download-artifact@v5
       with:
@@ -299,11 +304,17 @@ jobs:
       with:
         subject-path: 'wincamcfg.exe'
     
-    - name: Generate SBOM attestation
+    - name: Generate SPDX SBOM attestation
       uses: actions/attest-sbom@v3
       with:
         subject-path: 'wincamcfg.exe'
         sbom-path: 'sbom.spdx.json'
+    
+    - name: Generate CycloneDX SBOM attestation
+      uses: actions/attest-sbom@v3
+      with:
+        subject-path: 'wincamcfg.exe'
+        sbom-path: 'sbom.cyclonedx.json'
 
   create-release:
     name: Create GitHub Release

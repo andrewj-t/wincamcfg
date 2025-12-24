@@ -140,6 +140,41 @@ You can add this to startup scripts, group policies, or deployment tools to ensu
 - Windows (uses DirectShow APIs)
 - Rust 2024 edition or later (for building from source)
 
+## Release Verification 🔐
+
+All releases include cryptographic attestations to verify authenticity and integrity:
+
+### Binary and SBOM Attestation
+
+Release binaries (`wincamcfg.exe`) and software bill of materials (SBOMs) are attested by GitHub Actions using build provenance. This proves they were built from the exact source code in the tagged release.
+
+### Verifying Attestations
+
+To verify a release, use the GitHub CLI:
+
+```bash
+# Verify the binary provenance attestation
+gh attestation verify wincamcfg.exe --repo andrewj-t/wincamcfg
+
+# Verify SBOM attestations
+gh attestation verify sbom.spdx.json --repo andrewj-t/wincamcfg
+gh attestation verify sbom.cyclonedx.json --repo andrewj-t/wincamcfg
+```
+
+These commands confirm that:
+
+- The binary was built by GitHub Actions from a specific commit
+- The build was triggered by a git tag corresponding to the release version
+- The workflow file is from the same tagged commit (no modifications)
+
+For more information, see the [GitHub attestations documentation](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-artifact-attestations).
+
+### Code Signing
+
+The release binary (`wincamcfg.exe`) is currently **not code-signed** due to the costs in obtaining a code signing certificate.
+
+If your organization requires code-signed binaries, you can use signtool to sign with an code signing certificate from your Internal CA.
+
 ## Troubleshooting 🔧
 
 Having issues? Check out the [Troubleshooting Guide](TROUBLESHOOTING.md) for debug logging instructions and common solutions.
