@@ -103,7 +103,7 @@ jobs:
         Write-Output "Binary path: $binaryPath"
     
     - name: Upload binary artifact
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: release-binary
         path: target/release/wincamcfg.exe
@@ -270,7 +270,7 @@ jobs:
       run: cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cyclonedx.json
     
     - name: Upload SBOM artifacts
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: sbom-artifacts
         path: sbom*.json
