@@ -5,14 +5,14 @@
 
 version: 2
 updates:
-  # Maintain dependencies for Cargo
   - package-ecosystem: "cargo"
-    directory: "/" # Location of package manifests
+    directory: "/"
     schedule:
       interval: "weekly"
-    allow:
-      - dependency-type: "direct"
-  # Maintain dependencies for GitHub Actions
+    groups:
+      rust-deps:
+        patterns:
+          - "*"
   - package-ecosystem: github-actions
     directory: "/.github/workflows"
     schedule:
