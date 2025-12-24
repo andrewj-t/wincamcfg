@@ -290,12 +290,12 @@ jobs:
         ref: v${{ needs.build.outputs.version }}
     
     - name: Download binary artifact
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v7
       with:
         name: release-binary
     
     - name: Download SBOM artifacts
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v7
       with:
         name: sbom-artifacts
     
@@ -324,12 +324,12 @@ jobs:
     
     steps:
     - name: Download binary artifact
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v7
       with:
         name: release-binary
     
     - name: Download SBOM artifacts
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v7
       with:
         name: sbom-artifacts
     
