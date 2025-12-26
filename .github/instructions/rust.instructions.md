@@ -75,7 +75,7 @@ Refer to the detailed sections below for more information on each step
 - Use tools like `cargo tree`, `cargo-expand`, or `cargo doc --open` for exploring dependencies and structure.
 
 ## 4. Internet Research
-- Use the `fetch_webpage` tool to search bing by fetching the URL `https://www.bing.com/search?q=<your+search+query>`.
+- Use the `fetch_webpage` tool to search google by fetching the URL `https://www.google.com/search?q=<your+search+query>`.
 - After fetching, review the content returned by the fetch tool.**
 - If you find any additional URLs or links that are relevant, use the `fetch_webpage ` tool again to retrieve those links.
 - Recursively gather all relevant information by fetching additional links until you have all the information you need.
@@ -146,11 +146,6 @@ Before proceeding, you must **research and return** with relevant information fr
 
 The goal is to fully understand how to write safe, idiomatic, and performant Rust code in the following contexts:
 
-### GUI/UX Safety and Main Thread Handling
-- GUI/UX in Rust **must run in the main thread**. This means the main GUI/UX event loop (`GUI/UX::main()`) and all UI widgets must be initialized and updated on the main OS thread.
-- Any GUI/UX widget creation, update, or signal handling **must not happen in other threads**. Use message passing (e.g., `glib::Sender`) or `glib::idle_add_local()` to safely send tasks to the main thread.
-- Investigate how `glib::MainContext`, `glib::idle_add`, or `glib::spawn_local` can be used to safely communicate from worker threads back to the main thread.
-- Provide examples of how to safely update GUI/UX widgets from non-GUI threads.
 
 ### B. Memory Safety Handling
 - Confirm how Rust’s ownership model, borrowing rules, and lifetimes ensure memory safety, even with GUI/UX objects.
@@ -159,9 +154,8 @@ The goal is to fully understand how to write safe, idiomatic, and performant Rus
 - Investigate the role of smart pointers (`RefCell`, `Mutex`, etc.) when sharing state between callbacks and signals.
 
 ### C. Threads and Core Safety Handling
-- Investigate the correct use of multi-threading in a Rust GUI/UX application.
+- Investigate the correct use of multi-threading in a Rust CLI application.
 - Explain when to use `std::thread`, `tokio`, `async-std`, or `rayon` in conjunction with a GUI/UX UI.
-- Show how to spawn tasks that run in parallel without violating GUI/UX’s thread-safety guarantees.
 - Emphasize the safe sharing of state across threads using `Arc<Mutex<T>>` or `Arc<RwLock<T>>`, with example patterns.
 
 > Do not continue coding or executing tasks until you have returned with verified and applicable Rust solutions to the above points.

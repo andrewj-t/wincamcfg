@@ -17,35 +17,6 @@ use windows::{
 // String buffer size for Windows API calls (registry, property bags, etc.)
 const STRING_BUFFER_SIZE: usize = 512;
 
-/// RAII guard for COM initialization/cleanup
-///
-/// COM interfaces (ICreateDevEnum, IEnumMoniker, IMoniker, IPropertyBag, etc.)
-/// are automatically cleaned up when they go out of scope via their Drop implementations
-/// in the windows-rs crate. This guard only handles CoInitialize/CoUninitialize.
-struct ComGuard;
-
-impl ComGuard {
-    unsafe fn new() -> Result<Self> {
-        unsafe {
-            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            // S_OK (0) = initialized, S_FALSE (1) = already initialized
-            // Both are considered success for our purposes
-            if hr.is_err() {
-                return Err(anyhow::anyhow!("Failed to initialize COM: {:?}", hr));
-            }
-        }
-        Ok(ComGuard)
-    }
-}
-
-impl Drop for ComGuard {
-    fn drop(&mut self) {
-        unsafe {
-            CoUninitialize();
-        }
-    }
-}
-
 // DirectShow GUIDs for device enumeration
 const CLSID_SYSTEM_DEVICE_ENUM: GUID = GUID::from_u128(0x62be5d10_60eb_11d0_bd3b_00a0c911ce86);
 const CLSID_VIDEO_INPUT_DEVICE_CATEGORY: GUID =
@@ -117,6 +88,21 @@ pub struct DeviceInfo {
     pub camera_control_properties: Vec<PropertyInfo>,
 }
 
+impl DeviceInfo {
+    /// Iterate over all properties in a deterministic order (VideoProcAmp first, then CameraControl)
+    pub fn iter_all_properties(&self) -> impl Iterator<Item = &PropertyInfo> {
+        self.video_proc_amp_properties
+            .iter()
+            .chain(self.camera_control_properties.iter())
+    }
+
+    /// Find a property by name (case-insensitive) across both property groups
+    pub fn find_property(&self, property_name: &str) -> Option<&PropertyInfo> {
+        self.iter_all_properties()
+            .find(|p| p.name.eq_ignore_ascii_case(property_name))
+    }
+}
+
 /// Property information with current value, defaults, and supported values
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PropertyInfo {
@@ -129,6 +115,23 @@ pub struct PropertyInfo {
     pub current: Option<i32>,
     pub capabilities: Option<String>,
     pub property_type: PropertyType,
+}
+
+/// Lightweight representation for the `list` command
+#[derive(Debug, Serialize)]
+pub struct ListedDevice {
+    pub index: usize,
+    pub name: String,
+    pub device_path: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct DriverInfo {
+    device_desc: Option<String>,
+    manufacturer: Option<String>,
+    driver_version: Option<String>,
+    driver_date: Option<String>,
+    driver_path: Option<String>,
 }
 
 /// Build enum mapping from property name and min/max for display
@@ -185,187 +188,168 @@ pub fn parse_property_value(property_name: &str, value_str: &str) -> Result<(i32
     }
 
     // Check if Auto mode is requested
-    if value_str.eq_ignore_ascii_case("auto") {
-        return Ok((0, true)); // Value doesn't matter when auto is true
+    let trimmed = value_str.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Ok((0, true));
     }
 
-    // Parse property-specific string values
-    let value = match property_name {
-        "PowerlineFrequency" => match value_str {
-            "Disabled" | "disabled" => 0,
-            "50Hz" | "50hz" | "50" => 1,
-            "60Hz" | "60hz" | "60" => 2,
-            _ => value_str.parse::<i32>()
-                .with_context(|| format!("Invalid value '{}' for PowerlineFrequency. Expected: Disabled, 50Hz, 60Hz, or Auto", value_str))?,
+    if trimmed.is_empty() {
+        anyhow::bail!("Value cannot be empty");
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    let normalized_compact = normalized.replace(' ', "");
+
+    let parsed_value = match property_name {
+        "PowerlineFrequency" => match normalized_compact.as_str() {
+            "0" | "disabled" => 0,
+            "1" | "50" | "50hz" => 1,
+            "2" | "60" | "60hz" => 2,
+            "3" => 3,
+            _ => trimmed.parse::<i32>().with_context(|| {
+                format!("Failed to parse '{}' as PowerlineFrequency", value_str)
+            })?,
         },
-        "ColorEnable" | "BacklightCompensation" => match value_str {
-            "Off" | "off" | "0" => 0,
-            "On" | "on" | "1" => 1,
-            _ => value_str.parse::<i32>()
-                .with_context(|| format!("Invalid value '{}'. Expected: Off, On, or Auto", value_str))?,
+        "ColorEnable" | "BacklightCompensation" => match normalized_compact.as_str() {
+            "0" | "off" => 0,
+            "1" | "on" => 1,
+            _ => trimmed.parse::<i32>().with_context(|| {
+                format!(
+                    "Failed to parse '{}' as boolean-style property {}",
+                    value_str, property_name
+                )
+            })?,
         },
-        _ => value_str.parse::<i32>()
-            .with_context(|| format!("Invalid numeric value '{}'", value_str))?,
+        _ => trimmed
+            .parse::<i32>()
+            .with_context(|| format!("Failed to parse '{}' as numeric value", value_str))?,
     };
 
-    Ok((value, false))
+    Ok((parsed_value, false))
 }
 
-/// Internal structure for collecting driver information from Windows CM API
-#[derive(Default)]
-struct DriverInfo {
-    device_desc: Option<String>,
-    manufacturer: Option<String>,
-    driver_version: Option<String>,
-    driver_date: Option<String>,
-    driver_path: Option<String>,
-}
-
-/// Simplified device list item for list command
-#[derive(Serialize, Deserialize)]
-pub struct DeviceListItem {
-    pub index: usize,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_path: Option<String>,
-}
-
-/// List all video capture devices (lightweight - names and paths only)
-/// This is a simplified version of enumerate_devices() for the list command
-#[instrument]
-pub fn list_devices() -> Result<Vec<DeviceListItem>> {
-    debug!("Listing video capture devices");
-
-    let devices = enumerate_devices()?;
-
-    Ok(devices
-        .into_iter()
-        .enumerate()
-        .map(|(index, device)| DeviceListItem {
-            index,
-            name: device.name.unwrap_or_else(|| "Unknown".to_string()),
-            device_path: device.device_path,
-        })
-        .collect())
-}
-
-/// Enumerate all video capture devices and return their information
 #[instrument]
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
-    unsafe {
-        debug!("Initializing COM");
-        let _com = ComGuard::new()?;
-        debug!("COM initialized successfully");
+    debug!("Creating ICreateDevEnum");
+    let dev_enum: ICreateDevEnum = unsafe {
+        CoCreateInstance(&CLSID_SYSTEM_DEVICE_ENUM, None, CLSCTX_INPROC_SERVER)
+            .context("Failed to create device enumerator")?
+    };
+    debug!("ICreateDevEnum created successfully");
 
-        debug!("Creating ICreateDevEnum");
-        // Create the System Device Enumerator
-        let dev_enum: ICreateDevEnum =
-            CoCreateInstance(&CLSID_SYSTEM_DEVICE_ENUM, None, CLSCTX_INPROC_SERVER)
-                .context("Failed to create device enumerator")?;
-        debug!("ICreateDevEnum created successfully");
+    debug!("Creating class enumerator for video input devices");
+    let mut enum_moniker: Option<IEnumMoniker> = None;
+    let hr = unsafe {
+        dev_enum.CreateClassEnumerator(&CLSID_VIDEO_INPUT_DEVICE_CATEGORY, &mut enum_moniker, 0)
+    };
+    debug!("CreateClassEnumerator returned: {:?}", hr);
+    hr.context("Failed to create video device class enumerator")?;
 
-        debug!("Creating class enumerator for video input devices");
-        // Create an enumerator for the video input device category
-        let mut enum_moniker: Option<IEnumMoniker> = None;
-        let hr = dev_enum.CreateClassEnumerator(
-            &CLSID_VIDEO_INPUT_DEVICE_CATEGORY,
-            &mut enum_moniker,
-            0,
-        );
-        debug!("CreateClassEnumerator returned: {:?}", hr);
-        hr.context("Failed to create video device class enumerator")?;
+    let Some(enum_moniker) = enum_moniker else {
+        debug!("No video devices found (enum_moniker is None)");
+        return Ok(Vec::new());
+    };
 
-        let Some(enum_moniker) = enum_moniker else {
-            debug!("No video devices found (enum_moniker is None)");
-            return Ok(Vec::new());
-        };
+    let mut devices = Vec::new();
 
-        let mut devices = Vec::new();
+    debug!("Starting device enumeration loop");
+    loop {
+        let mut monikers: [Option<IMoniker>; 1] = [None];
+        let mut fetched = 0u32;
 
-        debug!("Starting device enumeration loop");
-        loop {
-            let mut monikers: [Option<IMoniker>; 1] = [None];
-            let mut fetched = 0u32;
+        trace!("Calling enum_moniker.Next()");
+        let hr = unsafe { enum_moniker.Next(&mut monikers, Some(&mut fetched)) };
 
-            trace!("Calling enum_moniker.Next()");
-            let hr = enum_moniker.Next(&mut monikers, Some(&mut fetched));
-
-            if hr != S_OK || fetched == 0 {
-                debug!("Enumeration complete. HR: {:?}, Fetched: {}", hr, fetched);
-                break;
-            }
-
-            trace!("Processing moniker {} (fetched={})", devices.len(), fetched);
-
-            if let Some(mon) = &monikers[0] {
-                trace!("Binding moniker to property bag");
-                let device_name = get_device_name(mon).ok();
-                debug!(device_name = ?device_name, "Processing device");
-
-                let mut device = DeviceInfo {
-                    name: device_name,
-                    device_path: None,
-                    device_description: None,
-                    manufacturer: None,
-                    driver_version: None,
-                    driver_date: None,
-                    driver_path: None,
-                    video_proc_amp_properties: Vec::new(),
-                    camera_control_properties: Vec::new(),
-                };
-
-                // Get device path
-                trace!("Getting device path");
-                if let Ok(path) = get_device_path(mon) {
-                    trace!(device_path = %path, "Device path obtained");
-                    device.device_path = Some(path.clone());
-
-                    // Get driver information
-                    if let Ok(driver_info) = get_driver_info_from_path(&path) {
-                        device.device_description = driver_info.device_desc;
-                        device.manufacturer = driver_info.manufacturer;
-                        device.driver_version = driver_info.driver_version;
-                        device.driver_date = driver_info.driver_date;
-                        device.driver_path = driver_info.driver_path;
-                    }
-                }
-
-                // Get VideoProcAmp properties
-                trace!("Querying VideoProcAmp properties");
-                if let Ok(props) = get_video_proc_amp_properties(mon) {
-                    debug!(
-                        property_count = props.len(),
-                        "VideoProcAmp properties enumerated"
-                    );
-                    device.video_proc_amp_properties = props;
-                } else {
-                    trace!("Failed to get VideoProcAmp properties");
-                }
-
-                // Get CameraControl properties
-                trace!("Querying CameraControl properties");
-                if let Ok(props) = get_camera_control_properties(mon) {
-                    debug!(
-                        property_count = props.len(),
-                        "CameraControl properties enumerated"
-                    );
-                    device.camera_control_properties = props;
-                } else {
-                    trace!("Failed to get CameraControl properties");
-                }
-
-                debug!(
-                    device_name = ?device.name,
-                    video_proc_amp_count = device.video_proc_amp_properties.len(),
-                    camera_control_count = device.camera_control_properties.len(),
-                    "Device enumeration complete"
-                );
-                devices.push(device);
-            }
+        if hr != S_OK || fetched == 0 {
+            debug!("Enumeration complete. HR: {:?}, Fetched: {}", hr, fetched);
+            break;
         }
 
-        Ok(devices)
+        trace!("Processing moniker {} (fetched={})", devices.len(), fetched);
+
+        if let Some(mon) = &monikers[0] {
+            trace!("Binding moniker to property bag");
+            let device_name = get_device_name(mon).ok();
+            debug!(device_name = ?device_name, "Processing device");
+
+            let mut device = DeviceInfo {
+                name: device_name,
+                device_path: None,
+                device_description: None,
+                manufacturer: None,
+                driver_version: None,
+                driver_date: None,
+                driver_path: None,
+                video_proc_amp_properties: Vec::new(),
+                camera_control_properties: Vec::new(),
+            };
+
+            // Get device path
+            trace!("Getting device path");
+            if let Ok(path) = get_device_path(mon) {
+                trace!(device_path = %path, "Device path obtained");
+                device.device_path = Some(path.clone());
+
+                // Get driver information
+                if let Ok(driver_info) = get_driver_info_from_path(&path) {
+                    device.device_description = driver_info.device_desc;
+                    device.manufacturer = driver_info.manufacturer;
+                    device.driver_version = driver_info.driver_version;
+                    device.driver_date = driver_info.driver_date;
+                    device.driver_path = driver_info.driver_path;
+                }
+            }
+
+            // Get VideoProcAmp properties
+            trace!("Querying VideoProcAmp properties");
+            if let Ok(props) = get_video_proc_amp_properties(mon) {
+                debug!(
+                    property_count = props.len(),
+                    "VideoProcAmp properties enumerated"
+                );
+                device.video_proc_amp_properties = props;
+            } else {
+                trace!("Failed to get VideoProcAmp properties");
+            }
+
+            // Get CameraControl properties
+            trace!("Querying CameraControl properties");
+            if let Ok(props) = get_camera_control_properties(mon) {
+                debug!(
+                    property_count = props.len(),
+                    "CameraControl properties enumerated"
+                );
+                device.camera_control_properties = props;
+            } else {
+                trace!("Failed to get CameraControl properties");
+            }
+
+            debug!(
+                device_name = ?device.name,
+                video_proc_amp_count = device.video_proc_amp_properties.len(),
+                camera_control_count = device.camera_control_properties.len(),
+                "Device enumeration complete"
+            );
+            devices.push(device);
+        }
     }
+
+    Ok(devices)
+}
+
+#[instrument]
+pub fn list_devices() -> Result<Vec<ListedDevice>> {
+    let devices = enumerate_devices()?;
+    let listed = devices
+        .into_iter()
+        .enumerate()
+        .map(|(index, device)| ListedDevice {
+            index,
+            name: device.name.unwrap_or_else(|| format!("Camera {}", index)),
+            device_path: device.device_path,
+        })
+        .collect();
+    Ok(listed)
 }
 
 #[instrument(skip(moniker))]
@@ -465,7 +449,7 @@ fn parse_device_instance_id(device_path: &str) -> Option<String> {
     None
 }
 
-unsafe fn get_driver_info_from_path(device_path: &str) -> Result<DriverInfo> {
+fn get_driver_info_from_path(device_path: &str) -> Result<DriverInfo> {
     let device_instance_id = match parse_device_instance_id(device_path) {
         Some(id) => id,
         None => return Ok(DriverInfo::default()),
@@ -566,7 +550,7 @@ where
 
     let str_len = (buffer_len as usize / 2).saturating_sub(1);
     if str_len > 0 {
-        Ok(String::from_utf16_lossy(&buffer[..str_len]).to_string())
+        Ok(String::from_utf16_lossy(&buffer[..str_len]))
     } else {
         anyhow::bail!("Empty property value")
     }
@@ -763,7 +747,7 @@ where
     Ok(capabilities)
 }
 
-unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
+fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
     get_properties(
         moniker,
         |f| f.cast().context("Failed to get IAMVideoProcAmp interface"),
@@ -794,7 +778,7 @@ unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<Proper
     )
 }
 
-unsafe fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
+fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
     get_properties(
         moniker,
         |f| f.cast().context("Failed to get IAMCameraControl interface"),
@@ -861,8 +845,6 @@ pub fn set_video_proc_amp_property(
     value: i32,
     auto: bool,
 ) -> Result<()> {
-    let _com = unsafe { ComGuard::new()? };
-
     let target_path = device
         .device_path
         .as_ref()
@@ -897,8 +879,6 @@ pub fn set_camera_control_property(
     value: i32,
     auto: bool,
 ) -> Result<()> {
-    let _com = unsafe { ComGuard::new()? };
-
     let target_path = device
         .device_path
         .as_ref()
@@ -943,24 +923,7 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
         anyhow::bail!("Invalid property name: exceeds maximum length");
     }
 
-    // Parse the value string to get numeric value and auto flag
-    let (numeric_value, auto_mode) = parse_property_value(property_name, value_str)?;
-
-    // Try to find the property in VideoProcAmp properties first
-    let property_info = device
-        .video_proc_amp_properties
-        .iter()
-        .find(|p| p.name.eq_ignore_ascii_case(property_name))
-        .map(|p| (p, PropertyType::VideoProcAmp))
-        .or_else(|| {
-            device
-                .camera_control_properties
-                .iter()
-                .find(|p| p.name.eq_ignore_ascii_case(property_name))
-                .map(|p| (p, PropertyType::CameraControl))
-        });
-
-    let (prop_info, property_type) = property_info.ok_or_else(|| {
+    let prop_info = device.find_property(property_name).ok_or_else(|| {
         anyhow::anyhow!(
             "Property '{}' not found on device '{}'",
             property_name,
@@ -968,36 +931,9 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
         )
     })?;
 
-    // Validate value is within safe range (skip validation for auto mode)
-    if !auto_mode
-        && let (Some(min), Some(max)) = (prop_info.min, prop_info.max)
-        && (numeric_value < min || numeric_value > max)
-    {
-        anyhow::bail!(
-            "Value {} for property '{}' is outside the safe range {}-{} (device reports: min={}, max={})",
-            numeric_value,
-            property_name,
-            min,
-            max,
-            min,
-            max
-        );
-    }
+    let (numeric_value, auto_mode) = parse_property_value(property_name, value_str)?;
 
-    match property_type {
-        PropertyType::VideoProcAmp => {
-            let prop_enum: VideoProcAmpProperty = property_name
-                .parse()
-                .map_err(|_| anyhow::anyhow!("Unknown VideoProcAmp property: {}", property_name))?;
-            set_video_proc_amp_property(device, prop_enum, numeric_value, auto_mode)
-        }
-        PropertyType::CameraControl => {
-            let prop_enum: CameraControlProperty = property_name.parse().map_err(|_| {
-                anyhow::anyhow!("Unknown CameraControl property: {}", property_name)
-            })?;
-            set_camera_control_property(device, prop_enum, numeric_value, auto_mode)
-        }
-    }
+    set_property_value(device, prop_info, numeric_value, auto_mode)
 }
 
 /// Generate enum mapping for special properties
@@ -1031,4 +967,68 @@ fn get_enum_mapping(property_name: &str, min: i32, max: i32) -> Option<Vec<(i32,
         }
         _ => None,
     }
+}
+
+fn validate_property_value(prop_info: &PropertyInfo, value: i32, auto_mode: bool) -> Result<()> {
+    if auto_mode {
+        return Ok(());
+    }
+
+    if let (Some(min), Some(max)) = (prop_info.min, prop_info.max) {
+        if value < min || value > max {
+            anyhow::bail!(
+                "Value {} for property '{}' is outside the safe range {}-{} (device reports: min={}, max={})",
+                value,
+                prop_info.name,
+                min,
+                max,
+                min,
+                max
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn dispatch_property_set(
+    device: &DeviceInfo,
+    property: &PropertyInfo,
+    numeric_value: i32,
+    auto_mode: bool,
+) -> Result<()> {
+    match property.property_type {
+        PropertyType::VideoProcAmp => {
+            let prop_enum: VideoProcAmpProperty = property
+                .name
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Unknown VideoProcAmp property: {}", property.name))?;
+            set_video_proc_amp_property(device, prop_enum, numeric_value, auto_mode)
+        }
+        PropertyType::CameraControl => {
+            let prop_enum: CameraControlProperty = property.name.parse().map_err(|_| {
+                anyhow::anyhow!("Unknown CameraControl property: {}", property.name)
+            })?;
+            set_camera_control_property(device, prop_enum, numeric_value, auto_mode)
+        }
+    }
+}
+
+/// Apply a property update using an already parsed numeric value and auto flag
+pub fn set_property_value(
+    device: &DeviceInfo,
+    property: &PropertyInfo,
+    numeric_value: i32,
+    auto_mode: bool,
+) -> Result<()> {
+    validate_property_value(property, numeric_value, auto_mode)?;
+    dispatch_property_set(device, property, numeric_value, auto_mode)
+}
+
+/// Derive the target numeric value and auto flag for a property's reported default
+pub fn property_default_target(property: &PropertyInfo) -> Option<(i32, bool)> {
+    let default_value = property.default?;
+    let is_auto = property.name.eq_ignore_ascii_case("PowerlineFrequency") && default_value == 3;
+    let numeric_value = if is_auto { 0 } else { default_value };
+    Some((numeric_value, is_auto))
 }

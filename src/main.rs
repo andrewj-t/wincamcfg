@@ -1,11 +1,12 @@
 pub mod webcam;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
 use serde_with::skip_serializing_none;
 use tracing::{debug, info, instrument};
 use tracing_subscriber::EnvFilter;
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 
 // Output structures for JSON/text rendering
 #[skip_serializing_none]
@@ -106,6 +107,8 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let _com_runtime = ComRuntime::initialize()?;
+
     // Initialize tracing with environment-based filtering
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -162,6 +165,28 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+struct ComRuntime;
+
+impl ComRuntime {
+    fn initialize() -> Result<Self> {
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            if hr.is_err() {
+                return Err(anyhow!("Failed to initialize COM: {:?}", hr));
+            }
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for ComRuntime {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
+
 /// Parse camera selection and return device indices
 fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize>> {
     // Sanitize input: limit length
@@ -207,11 +232,7 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
     });
 
     // Collect all properties from both VideoProcAmp and CameraControl
-    let all_properties: Vec<&webcam::PropertyInfo> = device
-        .video_proc_amp_properties
-        .iter()
-        .chain(&device.camera_control_properties)
-        .collect();
+    let all_properties: Vec<&webcam::PropertyInfo> = device.iter_all_properties().collect();
 
     let property_outputs: IndexMap<String, PropertyOutput> = all_properties
         .iter()
@@ -408,70 +429,110 @@ fn set_property(
         let device = &devices[idx];
         let device_name = device.name.as_deref().unwrap_or("Unknown");
 
-        // Get list of properties to set
-        let properties_to_set: Vec<(&str, String)> = if reset_all {
-            // Collect all properties with their default values, formatted as strings
-            device
-                .video_proc_amp_properties
-                .iter()
-                .chain(&device.camera_control_properties)
-                .map(|p| {
-                    let val = p
+        if reset_all {
+            let pending: Vec<_> = device
+                .iter_all_properties()
+                .filter_map(|prop| {
+                    let (numeric_value, auto_mode) = webcam::property_default_target(prop)?;
+                    let display_value = prop
                         .default
-                        .map(|v| webcam::format_property_value(&p.name, v))
-                        .unwrap_or_else(|| "".to_string());
-                    (p.name.as_str(), val)
+                        .map(|v| webcam::format_property_value(&prop.name, v))
+                        .unwrap_or_else(|| numeric_value.to_string());
+                    Some((prop, numeric_value, auto_mode, display_value))
                 })
-                .collect()
-        } else {
-            // Single property
-            let value_to_set = if use_default {
-                // Find the property to get its default value, formatted as string
-                device
-                    .video_proc_amp_properties
-                    .iter()
-                    .chain(&device.camera_control_properties)
-                    .find(|p| p.name.eq_ignore_ascii_case(&property))
-                    .map(|p| {
-                        p.default
-                            .map(|v| webcam::format_property_value(&p.name, v))
-                            .unwrap_or_else(|| "".to_string())
-                    })
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Property '{}' not found on device '{}'",
-                            property,
-                            device_name
-                        )
-                    })?
-            } else {
-                value.clone().unwrap() // Safe because we validated earlier
-            };
-            vec![(property.as_str(), value_to_set)]
-        };
+                .collect();
 
-        // Set each property
-        for (prop_name, prop_value) in properties_to_set {
-            let result = webcam::set_property(device, prop_name, &prop_value);
+            for (prop, numeric_value, auto_mode, display_value) in pending {
+                let result = webcam::set_property_value(device, prop, numeric_value, auto_mode);
+
+                match &result {
+                    Ok(_) => {
+                        info!(device_index = idx, device_name, property = %prop.name, value = %display_value, "Property set successfully")
+                    }
+                    Err(e) => {
+                        debug!(device_index = idx, device_name, property = %prop.name, error = %e, "Failed to set property")
+                    }
+                }
+
+                results.push((
+                    idx,
+                    device_name,
+                    prop.name.clone(),
+                    display_value,
+                    result.is_ok(),
+                    result.err().map(|e| e.to_string()),
+                ));
+            }
+
+            continue;
+        }
+
+        if use_default {
+            let prop_info = device.find_property(&property).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Property '{}' not found on device '{}'",
+                    property,
+                    device_name
+                )
+            })?;
+
+            let (numeric_value, auto_mode) = webcam::property_default_target(prop_info)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Property '{}' does not expose a default value on device '{}'",
+                        prop_info.name,
+                        device_name
+                    )
+                })?;
+
+            let display_value = prop_info
+                .default
+                .map(|v| webcam::format_property_value(&prop_info.name, v))
+                .unwrap_or_else(|| numeric_value.to_string());
+
+            let result = webcam::set_property_value(device, prop_info, numeric_value, auto_mode);
 
             match &result {
                 Ok(_) => {
-                    info!(device_index = idx, device_name, property = %prop_name, value = %prop_value, "Property set successfully")
+                    info!(device_index = idx, device_name, property = %prop_info.name, value = %display_value, "Property set successfully")
                 }
                 Err(e) => {
-                    debug!(device_index = idx, device_name, property = %prop_name, error = %e, "Failed to set property")
+                    debug!(device_index = idx, device_name, property = %prop_info.name, error = %e, "Failed to set property")
                 }
             }
 
             results.push((
                 idx,
                 device_name,
-                prop_name.to_string(),
-                prop_value,
+                prop_info.name.clone(),
+                display_value,
                 result.is_ok(),
                 result.err().map(|e| e.to_string()),
             ));
+
+            continue;
         }
+
+        let value_to_set = value.clone().unwrap();
+        let result = webcam::set_property(device, &property, &value_to_set);
+
+        match &result {
+            Ok(_) => {
+                info!(device_index = idx, device_name, property = %property, value = %value_to_set, "Property set successfully")
+            }
+            Err(e) => {
+                debug!(device_index = idx, device_name, property = %property, error = %e, "Failed to set property")
+            }
+        }
+
+        results.push((
+            idx,
+            device_name,
+            property.clone(),
+            value_to_set,
+            result.is_ok(),
+            result.err().map(|e| e.to_string()),
+        ));
     }
 
     // Output results
