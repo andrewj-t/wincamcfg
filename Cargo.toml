@@ -10,8 +10,10 @@ homepage = "https://github.com/andrewj-t/wincamcfg/"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
+indexmap = { version = "2.7", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_with = "3.11"
 strum = { version = "0.27", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

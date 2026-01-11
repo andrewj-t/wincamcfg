@@ -2,26 +2,26 @@ pub mod webcam;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use indexmap::IndexMap;
+use serde_with::skip_serializing_none;
 use tracing::{debug, info, instrument};
 use tracing_subscriber::EnvFilter;
 
 // Output structures for JSON/text rendering
+#[skip_serializing_none]
 #[derive(Debug, serde::Serialize)]
 struct DeviceOutput<'a> {
     index: usize,
     name: &'a str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    properties: Vec<(String, PropertyOutput)>,
+    properties: IndexMap<String, PropertyOutput>,
 }
 
 // Property output with formatted values (value, default, and supported_values are all formatted strings)
+#[skip_serializing_none]
 #[derive(Debug, serde::Serialize)]
 struct PropertyOutput {
-    #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     supported_values: Option<String>,
 }
 
@@ -186,7 +186,7 @@ fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize
 }
 
 // Build device output structure from domain DeviceInfo
-// Converts property vectors to output format with formatted values
+// Converts property vectors to IndexMap with formatted values
 fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> DeviceOutput<'a> {
     // Collect all properties from both VideoProcAmp and CameraControl
     let all_properties: Vec<&webcam::PropertyInfo> = device
@@ -195,7 +195,7 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
         .chain(&device.camera_control_properties)
         .collect();
 
-    let property_outputs: Vec<(String, PropertyOutput)> = all_properties
+    let property_outputs: IndexMap<String, PropertyOutput> = all_properties
         .iter()
         .map(|prop| {
             (
