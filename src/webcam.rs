@@ -9,13 +9,9 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
 use tracing::{debug, instrument, trace};
 use windows::{
-    Win32::Devices::DeviceAndDriverInstallation::*, Win32::Foundation::*,
-    Win32::Media::DirectShow::*, Win32::System::Com::StructuredStorage::*, Win32::System::Com::*,
-    Win32::UI::Shell::*, core::*,
+    Win32::Foundation::*, Win32::Media::DirectShow::*,
+    Win32::System::Com::StructuredStorage::IPropertyBag, Win32::System::Com::*, core::*,
 };
-
-// String buffer size for Windows API calls (registry, property bags, etc.)
-const STRING_BUFFER_SIZE: usize = 512;
 
 /// RAII guard for COM initialization/cleanup
 ///
@@ -108,11 +104,6 @@ pub enum PropertyType {
 pub struct DeviceInfo {
     pub name: Option<String>,
     pub device_path: Option<String>,
-    pub device_description: Option<String>,
-    pub manufacturer: Option<String>,
-    pub driver_version: Option<String>,
-    pub driver_date: Option<String>,
-    pub driver_path: Option<String>,
     pub video_proc_amp_properties: Vec<PropertyInfo>,
     pub camera_control_properties: Vec<PropertyInfo>,
 }
@@ -211,16 +202,6 @@ pub fn parse_property_value(property_name: &str, value_str: &str) -> Result<(i32
     Ok((value, false))
 }
 
-/// Internal structure for collecting driver information from Windows CM API
-#[derive(Default)]
-struct DriverInfo {
-    device_desc: Option<String>,
-    manufacturer: Option<String>,
-    driver_version: Option<String>,
-    driver_date: Option<String>,
-    driver_path: Option<String>,
-}
-
 /// Simplified device list item for list command
 #[derive(Serialize, Deserialize)]
 pub struct DeviceListItem {
@@ -305,11 +286,6 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
                 let mut device = DeviceInfo {
                     name: device_name,
                     device_path: None,
-                    device_description: None,
-                    manufacturer: None,
-                    driver_version: None,
-                    driver_date: None,
-                    driver_path: None,
                     video_proc_amp_properties: Vec::new(),
                     camera_control_properties: Vec::new(),
                 };
@@ -318,16 +294,7 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
                 trace!("Getting device path");
                 if let Ok(path) = get_device_path(mon) {
                     trace!(device_path = %path, "Device path obtained");
-                    device.device_path = Some(path.clone());
-
-                    // Get driver information
-                    if let Ok(driver_info) = get_driver_info_from_path(&path) {
-                        device.device_description = driver_info.device_desc;
-                        device.manufacturer = driver_info.manufacturer;
-                        device.driver_version = driver_info.driver_version;
-                        device.driver_date = driver_info.driver_date;
-                        device.driver_path = driver_info.driver_path;
-                    }
+                    device.device_path = Some(path);
                 }
 
                 // Get VideoProcAmp properties
@@ -447,227 +414,6 @@ fn format_capabilities(caps: i32) -> Option<String> {
         None
     } else {
         Some(cap_names.join(", "))
-    }
-}
-
-// Extract Windows device instance ID from DirectShow device path
-// Converts path like "\\?\usb#vid_046d&pid_082d..." to "USB\VID_046D&PID_082D\..."
-fn parse_device_instance_id(device_path: &str) -> Option<String> {
-    let path_lower = device_path.to_lowercase();
-    let usb_start = path_lower.find("usb#")?;
-    let path_part = &device_path[usb_start + 4..];
-    let guid_start = path_part.find("#{")?;
-    let device_id = &path_part[..guid_start];
-    let parts: Vec<&str> = device_id.split('#').collect();
-    if parts.len() >= 2 {
-        return Some(format!("USB\\{}\\{}", parts[0].to_uppercase(), parts[1]));
-    }
-    None
-}
-
-unsafe fn get_driver_info_from_path(device_path: &str) -> Result<DriverInfo> {
-    let device_instance_id = match parse_device_instance_id(device_path) {
-        Some(id) => id,
-        None => return Ok(DriverInfo::default()),
-    };
-
-    unsafe {
-        let device_id_wide: Vec<u16> = device_instance_id
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut devinst: u32 = 0;
-        let cr = CM_Locate_DevNodeW(
-            &mut devinst,
-            PCWSTR(device_id_wide.as_ptr()),
-            CM_LOCATE_DEVNODE_NORMAL,
-        );
-
-        if cr != CR_SUCCESS {
-            return Ok(DriverInfo::default());
-        }
-
-        let (driver_version, driver_date, driver_path) = get_driver_info_from_cm(devinst)
-            .ok()
-            .unwrap_or((None, None, None));
-
-        let driver_info = DriverInfo {
-            device_desc: get_cm_property_string(devinst, CM_DRP_DEVICEDESC).ok(),
-            manufacturer: get_cm_property_string(devinst, CM_DRP_MFG).ok(),
-            driver_version,
-            driver_date,
-            driver_path,
-        };
-
-        Ok(driver_info)
-    }
-} // Expand Windows indirect strings (e.g., @oem16.inf,%pid_082d%;HD Pro Webcam C920)
-// Uses SHLoadIndirectString to resolve, with fallback to text after semicolon
-fn expand_indirect_string(s: &str) -> Option<String> {
-    if !s.starts_with('@') {
-        return Some(s.to_string());
-    }
-
-    unsafe {
-        // Use SHLoadIndirectString to resolve the indirect string
-        let s_wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut buffer = vec![0u16; STRING_BUFFER_SIZE];
-
-        let hr = SHLoadIndirectString(PCWSTR(s_wide.as_ptr()), &mut buffer, None);
-
-        if hr.is_ok() {
-            let str_len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
-            if str_len > 0 {
-                return Some(String::from_utf16_lossy(&buffer[..str_len]));
-            }
-        }
-
-        // Fallback: extract text after semicolon if present
-        if let Some(semicolon_pos) = s.rfind(';') {
-            return Some(s[semicolon_pos + 1..].to_string());
-        }
-
-        Some(s.to_string())
-    }
-}
-
-/// Helper to safely call Windows APIs that use UTF-16 buffers with size negotiation
-/// Handles the common pattern: call with initial buffer, resize if needed, retry
-///
-/// # Arguments
-/// * `initial_size` - Initial buffer size in u16 units (typically STRING_BUFFER_SIZE)
-/// * `call_fn` - Closure that performs the FFI call: `|buffer, len| -> result_code`
-/// * `success_check` - Closure that checks if result indicates success
-fn call_with_utf16_buffer_generic<F, R>(
-    initial_size: usize,
-    mut call_fn: F,
-    is_buffer_small: impl Fn(&R) -> bool,
-    is_success: impl Fn(&R) -> bool,
-) -> Result<String>
-where
-    F: FnMut(&mut Vec<u16>, &mut u32) -> R,
-{
-    let mut buffer = vec![0u16; initial_size];
-    let mut buffer_len = (buffer.len() * 2) as u32;
-
-    // First attempt
-    let mut result = call_fn(&mut buffer, &mut buffer_len);
-
-    // Resize and retry if buffer was too small
-    if is_buffer_small(&result) {
-        let new_len = (buffer_len as usize) / 2;
-        buffer.resize(new_len, 0);
-        result = call_fn(&mut buffer, &mut buffer_len);
-    }
-
-    if !is_success(&result) {
-        anyhow::bail!("Windows API call failed");
-    }
-
-    let str_len = (buffer_len as usize / 2).saturating_sub(1);
-    if str_len > 0 {
-        Ok(String::from_utf16_lossy(&buffer[..str_len]).to_string())
-    } else {
-        anyhow::bail!("Empty property value")
-    }
-}
-
-unsafe fn get_cm_property_string(devinst: u32, property: u32) -> Result<String> {
-    use windows::Win32::Devices::DeviceAndDriverInstallation::*;
-
-    unsafe {
-        let mut reg_data_type: u32 = 0;
-        let value = call_with_utf16_buffer_generic(
-            STRING_BUFFER_SIZE,
-            |buffer, buffer_len| {
-                CM_Get_DevNode_Registry_PropertyW(
-                    devinst,
-                    property,
-                    Some(&mut reg_data_type),
-                    Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
-                    buffer_len,
-                    0,
-                )
-            },
-            |cr: &CONFIGRET| cr.0 == CR_BUFFER_SMALL.0,
-            |cr: &CONFIGRET| cr.0 == CR_SUCCESS.0,
-        )?;
-
-        Ok(expand_indirect_string(&value).unwrap_or(value))
-    }
-}
-/// RAII guard for registry key cleanup
-struct RegKeyGuard(windows::Win32::System::Registry::HKEY);
-
-impl Drop for RegKeyGuard {
-    fn drop(&mut self) {
-        unsafe {
-            use windows::Win32::System::Registry::*;
-            let _ = RegCloseKey(self.0);
-        }
-    }
-}
-
-unsafe fn get_driver_info_from_cm(
-    devinst: u32,
-) -> Result<(Option<String>, Option<String>, Option<String>)> {
-    unsafe {
-        use windows::Win32::System::Registry::*;
-
-        let mut hkey = HKEY::default();
-        let cr = CM_Open_DevNode_Key(
-            devinst,
-            KEY_READ.0,
-            0,
-            RegDisposition_OpenExisting,
-            &mut hkey,
-            CM_REGISTRY_SOFTWARE,
-        );
-
-        if cr != CR_SUCCESS {
-            return Ok((None, None, None));
-        }
-
-        // Use RAII guard to ensure registry key is closed even on early return or panic
-        let _guard = RegKeyGuard(hkey);
-
-        let driver_version = read_reg_value(&hkey, "DriverVersion").ok();
-        let driver_date = read_reg_value(&hkey, "DriverDate").ok();
-
-        // Get INF path which points to the driver installation file
-        let driver_path = read_reg_value(&hkey, "InfPath").ok();
-
-        Ok((driver_version, driver_date, driver_path))
-    }
-}
-
-unsafe fn read_reg_value(
-    hkey: &windows::Win32::System::Registry::HKEY,
-    value_name: &str,
-) -> Result<String> {
-    use windows::Win32::System::Registry::*;
-
-    unsafe {
-        let value_name_wide: Vec<u16> = value_name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-
-        call_with_utf16_buffer_generic(
-            STRING_BUFFER_SIZE,
-            |buffer, buffer_len| {
-                RegQueryValueExW(
-                    *hkey,
-                    PCWSTR(value_name_wide.as_ptr()),
-                    None,
-                    None,
-                    Some(buffer.as_mut_ptr() as *mut u8),
-                    Some(buffer_len),
-                )
-            },
-            |err: &WIN32_ERROR| err.0 == ERROR_MORE_DATA.0,
-            |err: &WIN32_ERROR| err.0 == ERROR_SUCCESS.0,
-        )
     }
 }
 

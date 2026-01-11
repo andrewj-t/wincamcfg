@@ -13,19 +13,7 @@ use tracing_subscriber::EnvFilter;
 struct DeviceOutput<'a> {
     index: usize,
     name: &'a str,
-    device_info: Option<DeviceInfoOutput<'a>>,
     properties: IndexMap<String, PropertyOutput>,
-}
-
-#[skip_serializing_none]
-#[derive(Debug, serde::Serialize)]
-struct DeviceInfoOutput<'a> {
-    device_path: Option<&'a String>,
-    manufacturer: Option<&'a String>,
-    device_description: Option<&'a String>,
-    driver_version: Option<&'a String>,
-    driver_date: Option<&'a String>,
-    driver_path: Option<&'a String>,
 }
 
 // Property output with formatted values (value, default, and supported_values are all formatted strings)
@@ -101,6 +89,9 @@ enum Commands {
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
     },
+
+    /// Show version information
+    Version,
 }
 
 fn main() -> Result<()> {
@@ -125,6 +116,7 @@ fn main() -> Result<()> {
             output,
         } => list_devices(include_device_path, output)?,
         Commands::Get { camera, output } => get_device_properties(camera, output)?,
+        Commands::Version => print_version(),
         Commands::Set {
             camera,
             property,
@@ -194,18 +186,8 @@ fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize
 }
 
 // Build device output structure from domain DeviceInfo
-// Converts property vectors to HashMap and includes all device metadata
+// Converts property vectors to IndexMap with formatted values
 fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> DeviceOutput<'a> {
-    // Always include device info
-    let device_info = Some(DeviceInfoOutput {
-        device_path: device.device_path.as_ref(),
-        manufacturer: device.manufacturer.as_ref(),
-        device_description: device.device_description.as_ref(),
-        driver_version: device.driver_version.as_ref(),
-        driver_date: device.driver_date.as_ref(),
-        driver_path: device.driver_path.as_ref(),
-    });
-
     // Collect all properties from both VideoProcAmp and CameraControl
     let all_properties: Vec<&webcam::PropertyInfo> = device
         .video_proc_amp_properties
@@ -237,7 +219,6 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
     DeviceOutput {
         index: idx,
         name: device.name.as_deref().unwrap_or("Unknown"),
-        device_info,
         properties: property_outputs,
     }
 }
@@ -248,37 +229,10 @@ fn render_json(outputs: &[DeviceOutput]) -> Result<String> {
 }
 
 // Render device outputs as human-readable text
-// Shows device info and all properties with formatted values
+// Shows properties with formatted values
 fn render_text(outputs: &[DeviceOutput]) {
     for output in outputs {
         println!("[{}] {}", output.index, output.name);
-
-        // Show device info if present
-        if let Some(ref info) = output.device_info {
-            println!("  Device Info:");
-
-            if let Some(path) = info.device_path {
-                println!("    Device Path: {}", path);
-            }
-
-            if let Some(mfg) = info.manufacturer {
-                println!("    Manufacturer: {}", mfg);
-            }
-            if let Some(desc) = info.device_description {
-                println!("    Description: {}", desc);
-            }
-            if let Some(version) = info.driver_version {
-                println!("    Driver Version: {}", version);
-            }
-            if let Some(date) = info.driver_date {
-                println!("    Driver Date: {}", date);
-            }
-            if let Some(path) = info.driver_path {
-                println!("    Driver Path: {}", path);
-            }
-        }
-
-        // Properties section
         println!("  Properties:");
 
         if output.properties.is_empty() {
@@ -520,4 +474,8 @@ fn set_property(
     }
 
     Ok(())
+}
+
+fn print_version() {
+    println!("wincamcfg {}", env!("CARGO_PKG_VERSION"));
 }
