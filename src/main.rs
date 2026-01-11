@@ -89,6 +89,9 @@ enum Commands {
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Text)]
         output: OutputFormat,
     },
+
+    /// Show version information
+    Version,
 }
 
 fn main() -> Result<()> {
@@ -113,6 +116,7 @@ fn main() -> Result<()> {
             output,
         } => list_devices(include_device_path, output)?,
         Commands::Get { camera, output } => get_device_properties(camera, output)?,
+        Commands::Version => print_version(),
         Commands::Set {
             camera,
             property,
@@ -470,4 +474,8 @@ fn set_property(
     }
 
     Ok(())
+}
+
+fn print_version() {
+    println!("wincamcfg {}", env!("CARGO_PKG_VERSION"));
 }
