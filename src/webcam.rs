@@ -9,10 +9,8 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
 use tracing::{debug, instrument, trace};
 use windows::{
-    Win32::Foundation::*,
-    Win32::Media::DirectShow::*, Win32::System::Com::*,
-    Win32::System::Com::StructuredStorage::IPropertyBag,
-    core::*,
+    Win32::Foundation::*, Win32::Media::DirectShow::*,
+    Win32::System::Com::StructuredStorage::IPropertyBag, Win32::System::Com::*, core::*,
 };
 
 /// RAII guard for COM initialization/cleanup
