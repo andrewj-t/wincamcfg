@@ -218,7 +218,7 @@ jobs:
 
   create-tag:
     name: Create Git Tag
-    needs: [build, changelog]
+    needs: [build, changelog, tag-check]
     if: needs.tag-check.outputs.tag_exists == 'false'
     runs-on: windows-latest
     
@@ -318,7 +318,7 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [build, create-tag, sbom-generation, attestations]
+    needs: [build, create-tag, sbom-generation, attestations, tag-check]
     if: needs.tag-check.outputs.tag_exists == 'false'
     runs-on: windows-latest
     

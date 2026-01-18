@@ -1,0 +1,80 @@
+name: Auto Patch Bump for Dependabot
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    # Only run on Dependabot PRs for Cargo (not github-actions)
+    if: |
+      github.actor == 'dependabot[bot]' &&
+      !contains(github.event.pull_request.title, 'github-actions')
+    
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref }}
+      
+      - name: Get current version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -n 1 | sed 's/version = "\(.*\)"/\1/')
+          echo "CURRENT_VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
+      
+      - name: Bump patch version
+        id: bump
+        shell: bash
+        run: |
+          CURRENT="${{ steps.version.outputs.CURRENT_VERSION }}"
+          # Parse version
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          PATCH=$((PATCH + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Bumping version from $CURRENT to $NEW_VERSION"
+      
+      - name: Update Cargo.toml
+        shell: bash
+        run: |
+          OLD_VERSION="${{ steps.version.outputs.CURRENT_VERSION }}"
+          NEW_VERSION="${{ steps.bump.outputs.NEW_VERSION }}"
+          sed -i "0,/version = \"$OLD_VERSION\"/s//version = \"$NEW_VERSION\"/" Cargo.toml
+          cat Cargo.toml | grep "^version"
+      
+      - name: Update CHANGELOG.md
+        shell: bash
+        run: |
+          NEW_VERSION="${{ steps.bump.outputs.NEW_VERSION }}"
+          DATE=$(date +%Y-%m-%d)
+          
+          # Create new changelog entry
+          {
+            echo "## [$NEW_VERSION] - $DATE"
+            echo ""
+            echo "### Changed"
+            echo "- Automated dependency updates"
+            echo ""
+            cat CHANGELOG.md
+          } > CHANGELOG.tmp
+          mv CHANGELOG.tmp CHANGELOG.md
+      
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Commit version bump to PR
+        run: |
+          git add Cargo.toml CHANGELOG.md
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.NEW_VERSION }}" || echo "No changes to commit"
+          git push
