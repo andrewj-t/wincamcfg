@@ -1,3 +1,8 @@
+## [0.2.7] - 2026-01-25
+
+### Changed
+- Automated dependency updates
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
