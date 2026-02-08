@@ -1,3 +1,8 @@
+## [0.2.9] - 2026-02-08
+
+### Changed
+- Automated dependency updates
+
 ## [0.2.8] - 2026-02-01
 
 ### Changed
