@@ -8,8 +8,12 @@ updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
       rust-deps:
         patterns:
           - "*"
