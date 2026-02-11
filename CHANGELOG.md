@@ -1,3 +1,9 @@
+## [0.2.10] - 2026-02-11
+
+### Changed
+- Bump time from 0.3.44 to 0.3.47 
+- Bumped other dependencies to latest via cargo update
+
 ## [0.2.9] - 2026-02-08
 
 ### Changed
