@@ -1,14 +1,14 @@
-# 📷 wincamcfg
+# wincamcfg
 
 > A command-line utility for managing webcam configuration on Windows
 
-## The Problem 🤔
+## The Problem
 
 Ever moved to a country with 50Hz powerline frequency and noticed your webcam footage looking like a disco strobe light? Windows defaults to 60Hz anti-flicker settings, which causes annoying flickering when your local power grid runs at 50Hz. While you *can* fix this manually in camera settings... doing it for multiple cameras or at scale is a pain.
 
-That's where `wincamcfg` comes in! 🎉
+That's where `wincamcfg` comes in!
 
-## What It Does ✨
+## What It Does
 
 `wincamcfg` is a simple command-line tool that lets you configure webcam properties programmatically. Whether you need to fix powerline frequency issues, adjust brightness and contrast, or reset all cameras to default settings, this tool has you covered.
 
@@ -16,7 +16,7 @@ It should be able to set the same settings as the DirectShow Native settings dil
 
 ![NativeCameraControls](NativeCameraControls.png)
 
-## Installation 🚀
+## Installation
 
 ### From Source
 
@@ -28,7 +28,7 @@ cargo build --release
 
 The compiled binary will be in `target/release/wincamcfg.exe`.
 
-## Usage 💡
+## Usage
 
 ### List All Cameras
 
@@ -108,7 +108,7 @@ wincamcfg set --camera 0 --property all --default
 wincamcfg set --camera all --property all --default
 ```
 
-## Available Properties 🎛️
+## Available Properties
 
 - `PowerlineFrequency` - Fix flickering (Disabled, 50Hz, 60Hz, Auto)
 - `Brightness` - Adjust brightness levels
@@ -124,7 +124,7 @@ wincamcfg set --camera all --property all --default
 
 Use `wincamcfg get --camera 0` to see which properties your specific camera supports.
 
-## Automation & Scripting 🤖
+## Automation & Scripting
 
 Perfect for deployment scenarios! Use JSON output for scripting:
 
@@ -135,12 +135,12 @@ wincamcfg set --camera all --property PowerlineFrequency --value 50Hz --output j
 
 You can add this to startup scripts, group policies, or deployment tools to ensure consistent camera configuration across multiple machines.
 
-## Requirements 📋
+## Requirements
 
 - Windows (uses DirectShow APIs)
 - Rust 2024 edition or later (for building from source)
 
-## Release Verification 🔐
+## Release Verification
 
 All releases include cryptographic attestations to verify authenticity and integrity:
 
@@ -175,22 +175,18 @@ The release binary (`wincamcfg.exe`) is currently **not code-signed** due to the
 
 If your organization requires code-signed binaries, you can use signtool to sign with an code signing certificate from your Internal CA.
 
-## Troubleshooting 🔧
+## Troubleshooting
 
 Having issues? Check out the [Troubleshooting Guide](TROUBLESHOOTING.md) for debug logging instructions and common solutions.
 
-## Show Your Support ⭐
+## Show Your Support
 
 If this tool helped fix your flickering webcam or made your life easier, a star on GitHub would be much appreciated!
 
-## License 📄
+## License
 
 MIT License - See [LICENSE](LICENSE) for details.
 
-## Contributing 🤝
+## Contributing
 
 Found a bug or want to add a feature? PRs are welcome! Please include working code with your contribution.
-
----
-
-Made with ❤️ because flickering webcams are annoying.
