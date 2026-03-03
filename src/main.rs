@@ -219,9 +219,9 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
     }
 }
 
-// Serialize device outputs to pretty-printed JSON
-fn render_json(outputs: &[DeviceOutput]) -> Result<String> {
-    serde_json::to_string_pretty(outputs).context("Failed to serialize to JSON")
+// Serialize any serializable value to pretty-printed JSON
+fn render_json<T: serde::Serialize>(value: &T) -> Result<String> {
+    serde_json::to_string_pretty(value).context("Failed to serialize to JSON")
 }
 
 // Render device outputs as human-readable text
@@ -280,8 +280,7 @@ fn list_devices(include_device_path: bool, output: OutputFormat) -> Result<()> {
     // Output in requested format
     match output {
         OutputFormat::Json => {
-            let json_str = serde_json::to_string_pretty(&devices)?;
-            println!("{}", json_str);
+            println!("{}", render_json(&devices)?);
         }
         OutputFormat::Text => {
             if devices.is_empty() {
@@ -456,8 +455,7 @@ fn set_property(
                 })
                 .collect();
 
-            let json_str = serde_json::to_string_pretty(&json_results)?;
-            println!("{}", json_str);
+            println!("{}", render_json(&json_results)?);
         }
     }
 
