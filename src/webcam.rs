@@ -470,22 +470,9 @@ where
             trace!(property = %name, min, max, step, default, caps, "GetRange successful");
             let mut value = 0;
             let mut flags_val = 0;
-            let _is_auto_mode = if get_value(&iface, prop_id, &mut value, &mut flags_val).is_ok() {
+            if get_value(&iface, prop_id, &mut value, &mut flags_val).is_ok() {
                 trace!(property = %name, value, flags = flags_val, "Get successful");
-                // If auto mode is enabled, record it (value formatting done on demand in UI)
-                match property_type {
-                    PropertyType::VideoProcAmp => {
-                        (caps & VideoProcAmp_Flags_Auto.0 != 0)
-                            && (flags_val & VideoProcAmp_Flags_Auto.0 != 0)
-                    }
-                    PropertyType::CameraControl => {
-                        (caps & CameraControl_Flags_Auto.0 != 0)
-                            && (flags_val & CameraControl_Flags_Auto.0 != 0)
-                    }
-                }
-            } else {
-                false
-            };
+            }
 
             capabilities.push(PropertyInfo {
                 name: name.to_string(),
