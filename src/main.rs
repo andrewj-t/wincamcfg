@@ -48,7 +48,7 @@ enum Commands {
     /// List all video capture devices
     List {
         /// Include device path in output
-        #[arg(long, default_value_t = false)]
+        #[arg(long)]
         include_device_path: bool,
 
         /// Output format
