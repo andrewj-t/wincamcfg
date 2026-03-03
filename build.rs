@@ -4,15 +4,16 @@ fn main() {
     // Only embed resources on Windows
     #[cfg(windows)]
     {
-        // Get version from Cargo.toml
+        // Get version from Cargo.toml; Windows manifests require a 4-part version
         let version = env!("CARGO_PKG_VERSION");
+        let manifest_version = format!("{}.0", version);
 
         let mut res = winresource::WindowsResource::new();
-        res.set_manifest(
+        let manifest = format!(
             r#"
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
-    version="0.1.0.0"
+    version="{manifest_version}"
     processorArchitecture="amd64"
     name="wincamcfg"
     type="win32"
@@ -32,7 +33,7 @@ fn main() {
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <!-- Windows 10 and Windows 11 -->
-      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <supportedOS Id="{{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}}"/>
     </application>
   </compatibility>
   
@@ -46,6 +47,7 @@ fn main() {
 "#,
         );
 
+        res.set_manifest(&manifest);
         res.set("ProductName", "wincamcfg")
             .set(
                 "FileDescription",

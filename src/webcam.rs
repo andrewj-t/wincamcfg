@@ -122,39 +122,38 @@ pub struct PropertyInfo {
     pub property_type: PropertyType,
 }
 
-/// Build enum mapping from property name and min/max for display
-pub fn build_enum_display(property_name: &str, min: i32, max: i32) -> Option<String> {
-    let mapping = get_enum_mapping(property_name, min, max)?;
-    let display = mapping
-        .iter()
-        .map(|(val, label)| format!("{} ({})", label, val))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(display)
+/// Returns the static value↔label table for enum-like properties.
+/// Each entry is (numeric_value, canonical_label).
+fn get_value_labels(property_name: &str) -> Option<&'static [(i32, &'static str)]> {
+    match property_name {
+        "PowerlineFrequency" => Some(&[(0, "Disabled"), (1, "50Hz"), (2, "60Hz"), (3, "Auto")]),
+        "ColorEnable" | "BacklightCompensation" => Some(&[(0, "Off"), (1, "On")]),
+        _ => None,
+    }
 }
 
 /// Format a property value into a human-readable label based on the property name
 pub fn format_property_value(property_name: &str, value: i32) -> String {
-    match property_name {
-        "PowerlineFrequency" => match value {
-            0 => "Disabled".to_string(),
-            1 => "50Hz".to_string(),
-            2 => "60Hz".to_string(),
-            3 => "Auto".to_string(),
-            _ => format!("Unknown({})", value),
-        },
-        "ColorEnable" => match value {
-            0 => "Off".to_string(),
-            1 => "On".to_string(),
-            _ => format!("Unknown({})", value),
-        },
-        "BacklightCompensation" => match value {
-            0 => "Off".to_string(),
-            1 => "On".to_string(),
-            _ => format!("Unknown({})", value),
-        },
-        _ => value.to_string(),
+    if let Some(labels) = get_value_labels(property_name) {
+        return labels
+            .iter()
+            .find(|&&(v, _)| v == value)
+            .map(|&(_, label)| label.to_string())
+            .unwrap_or_else(|| format!("Unknown({})", value));
     }
+    value.to_string()
+}
+
+/// Build enum mapping from property name and min/max for display
+pub fn build_enum_display(property_name: &str, min: i32, max: i32) -> Option<String> {
+    let labels = get_value_labels(property_name)?;
+    let display = labels
+        .iter()
+        .filter(|&&(v, _)| v >= min && v <= max)
+        .map(|&(val, label)| format!("{} ({})", label, val))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(display).filter(|s| !s.is_empty())
 }
 
 /// Parse a value string to (value, auto_mode) tuple
@@ -180,26 +179,34 @@ pub fn parse_property_value(property_name: &str, value_str: &str) -> Result<(i32
         return Ok((0, true)); // Value doesn't matter when auto is true
     }
 
-    // Parse property-specific string values
-    let value = match property_name {
-        "PowerlineFrequency" => match value_str {
-            "Disabled" | "disabled" => 0,
-            "50Hz" | "50hz" | "50" => 1,
-            "60Hz" | "60hz" | "60" => 2,
-            _ => value_str.parse::<i32>()
-                .with_context(|| format!("Invalid value '{}' for PowerlineFrequency. Expected: Disabled, 50Hz, 60Hz, or Auto", value_str))?,
-        },
-        "ColorEnable" | "BacklightCompensation" => match value_str {
-            "Off" | "off" | "0" => 0,
-            "On" | "on" | "1" => 1,
-            _ => value_str.parse::<i32>()
-                .with_context(|| format!("Invalid value '{}'. Expected: Off, On, or Auto", value_str))?,
-        },
-        _ => value_str.parse::<i32>()
-            .with_context(|| format!("Invalid numeric value '{}'", value_str))?,
-    };
+    // For enum-like properties: try label match first, then numeric parse
+    if let Some(labels) = get_value_labels(property_name) {
+        if let Some(&(v, _)) = labels
+            .iter()
+            .find(|&&(_, l)| l.eq_ignore_ascii_case(value_str))
+        {
+            return Ok((v, false));
+        }
+        // Numeric parse with a helpful hint listing valid labels
+        let valid = labels
+            .iter()
+            .map(|&(_, l)| l)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let v = value_str.parse::<i32>().with_context(|| {
+            format!(
+                "Invalid value '{}' for {}. Expected one of: {}, or a number",
+                value_str, property_name, valid
+            )
+        })?;
+        return Ok((v, false));
+    }
 
-    Ok((value, false))
+    // Generic numeric parse for non-enum properties
+    let v = value_str
+        .parse::<i32>()
+        .with_context(|| format!("Invalid numeric value '{}'", value_str))?;
+    Ok((v, false))
 }
 
 /// Simplified device list item for list command
@@ -470,22 +477,9 @@ where
             trace!(property = %name, min, max, step, default, caps, "GetRange successful");
             let mut value = 0;
             let mut flags_val = 0;
-            let _is_auto_mode = if get_value(&iface, prop_id, &mut value, &mut flags_val).is_ok() {
+            if get_value(&iface, prop_id, &mut value, &mut flags_val).is_ok() {
                 trace!(property = %name, value, flags = flags_val, "Get successful");
-                // If auto mode is enabled, record it (value formatting done on demand in UI)
-                match property_type {
-                    PropertyType::VideoProcAmp => {
-                        (caps & VideoProcAmp_Flags_Auto.0 != 0)
-                            && (flags_val & VideoProcAmp_Flags_Auto.0 != 0)
-                    }
-                    PropertyType::CameraControl => {
-                        (caps & CameraControl_Flags_Auto.0 != 0)
-                            && (flags_val & CameraControl_Flags_Auto.0 != 0)
-                    }
-                }
-            } else {
-                false
-            };
+            }
 
             capabilities.push(PropertyInfo {
                 name: name.to_string(),
@@ -514,7 +508,6 @@ unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<Proper
         moniker,
         |f| f.cast().context("Failed to get IAMVideoProcAmp interface"),
         &[
-            // ...existing code...
             VideoProcAmpProperty::Brightness,
             VideoProcAmpProperty::Contrast,
             VideoProcAmpProperty::Saturation,
@@ -545,7 +538,6 @@ unsafe fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<Proper
         moniker,
         |f| f.cast().context("Failed to get IAMCameraControl interface"),
         &[
-            // ...existing code...
             CameraControlProperty::Exposure,
             CameraControlProperty::Focus,
             CameraControlProperty::Pan,
@@ -600,13 +592,12 @@ unsafe fn find_device_by_path(target_path: &str) -> Result<IMoniker> {
     }
 }
 
-/// Set a VideoProcAmp property
-pub fn set_video_proc_amp_property(
-    device: &DeviceInfo,
-    property: VideoProcAmpProperty,
-    value: i32,
-    auto: bool,
-) -> Result<()> {
+/// Shared boilerplate: initialize COM, find device, bind to IBaseFilter, invoke closure.
+/// The ComGuard lives for the duration of the closure so COM stays initialized.
+fn with_device_filter<R, F>(device: &DeviceInfo, f: F) -> Result<R>
+where
+    F: FnOnce(IBaseFilter) -> Result<R>,
+{
     let _com = unsafe { ComGuard::new()? };
 
     let target_path = device
@@ -617,23 +608,33 @@ pub fn set_video_proc_amp_property(
     let mon = unsafe { find_device_by_path(target_path)? };
     let filter: IBaseFilter =
         unsafe { mon.BindToObject(None, None) }.context("Failed to bind to device filter")?;
-    let video_proc_amp: IAMVideoProcAmp = filter
-        .cast()
-        .context("Failed to get VideoProcAmp interface")?;
 
-    let flags = if auto {
-        VideoProcAmp_Flags_Auto.0
-    } else {
-        VideoProcAmp_Flags_Manual.0
-    };
-    unsafe { video_proc_amp.Set(property.into(), value, flags) }.with_context(|| {
-        format!(
-            "Failed to set VideoProcAmp property {} to value {}",
-            property, value
-        )
-    })?;
+    f(filter)
+}
 
-    Ok(())
+/// Set a VideoProcAmp property
+pub fn set_video_proc_amp_property(
+    device: &DeviceInfo,
+    property: VideoProcAmpProperty,
+    value: i32,
+    auto: bool,
+) -> Result<()> {
+    with_device_filter(device, |filter| {
+        let iface: IAMVideoProcAmp = filter
+            .cast()
+            .context("Failed to get VideoProcAmp interface")?;
+        let flags = if auto {
+            VideoProcAmp_Flags_Auto.0
+        } else {
+            VideoProcAmp_Flags_Manual.0
+        };
+        unsafe { iface.Set(property.into(), value, flags) }.with_context(|| {
+            format!(
+                "Failed to set VideoProcAmp property {} to value {}",
+                property, value
+            )
+        })
+    })
 }
 
 /// Set a CameraControl property
@@ -643,33 +644,22 @@ pub fn set_camera_control_property(
     value: i32,
     auto: bool,
 ) -> Result<()> {
-    let _com = unsafe { ComGuard::new()? };
-
-    let target_path = device
-        .device_path
-        .as_ref()
-        .context("Device path not available")?;
-
-    let mon = unsafe { find_device_by_path(target_path)? };
-    let filter: IBaseFilter =
-        unsafe { mon.BindToObject(None, None) }.context("Failed to bind to device filter")?;
-    let camera_control: IAMCameraControl = filter
-        .cast()
-        .context("Failed to get CameraControl interface")?;
-
-    let flags = if auto {
-        CameraControl_Flags_Auto.0
-    } else {
-        CameraControl_Flags_Manual.0
-    };
-    unsafe { camera_control.Set(property.into(), value, flags) }.with_context(|| {
-        format!(
-            "Failed to set CameraControl property {} to value {}",
-            property, value
-        )
-    })?;
-
-    Ok(())
+    with_device_filter(device, |filter| {
+        let iface: IAMCameraControl = filter
+            .cast()
+            .context("Failed to get CameraControl interface")?;
+        let flags = if auto {
+            CameraControl_Flags_Auto.0
+        } else {
+            CameraControl_Flags_Manual.0
+        };
+        unsafe { iface.Set(property.into(), value, flags) }.with_context(|| {
+            format!(
+                "Failed to set CameraControl property {} to value {}",
+                property, value
+            )
+        })
+    })
 }
 
 /// Set a property by name on a device
@@ -720,11 +710,9 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
         && (numeric_value < min || numeric_value > max)
     {
         anyhow::bail!(
-            "Value {} for property '{}' is outside the safe range {}-{} (device reports: min={}, max={})",
+            "Value {} for property '{}' is outside the supported range [{}, {}]",
             numeric_value,
             property_name,
-            min,
-            max,
             min,
             max
         );
@@ -743,38 +731,5 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
             })?;
             set_camera_control_property(device, prop_enum, numeric_value, auto_mode)
         }
-    }
-}
-
-/// Generate enum mapping for special properties
-fn get_enum_mapping(property_name: &str, min: i32, max: i32) -> Option<Vec<(i32, String)>> {
-    match property_name {
-        "PowerlineFrequency" => {
-            let mut mapping = vec![];
-            if min <= 0 && max >= 0 {
-                mapping.push((0, "Disabled".to_string()));
-            }
-            if min <= 1 && max >= 1 {
-                mapping.push((1, "50Hz".to_string()));
-            }
-            if min <= 2 && max >= 2 {
-                mapping.push((2, "60Hz".to_string()));
-            }
-            if min <= 3 && max >= 3 {
-                mapping.push((3, "Auto".to_string()));
-            }
-            Some(mapping)
-        }
-        "ColorEnable" | "BacklightCompensation" => {
-            let mut mapping = vec![];
-            if min <= 0 && max >= 0 {
-                mapping.push((0, "Off".to_string()));
-            }
-            if min <= 1 && max >= 1 {
-                mapping.push((1, "On".to_string()));
-            }
-            Some(mapping)
-        }
-        _ => None,
     }
 }

@@ -31,6 +31,16 @@ enum OutputFormat {
     Json,
 }
 
+#[derive(serde::Serialize)]
+struct SetResult {
+    index: usize,
+    name: String,
+    property: String,
+    value: String,
+    success: bool,
+    error: Option<String>,
+}
+
 /// A command-line utility for managing webcam properties
 #[derive(Parser)]
 #[command(name = "wincamcfg")]
@@ -48,7 +58,7 @@ enum Commands {
     /// List all video capture devices
     List {
         /// Include device path in output
-        #[arg(long, default_value_t = false)]
+        #[arg(long)]
         include_device_path: bool,
 
         /// Output format
@@ -133,20 +143,6 @@ fn main() -> Result<()> {
                 anyhow::bail!("Property 'all' can only be used with --default flag");
             }
 
-            // Validate property name early (skip validation for "all")
-            if !property.eq_ignore_ascii_case("all")
-                && (property.len() > 64 || !property.chars().all(|c| c.is_alphanumeric()))
-            {
-                anyhow::bail!("Invalid property name format");
-            }
-
-            // Validate value if provided
-            if let Some(ref v) = value
-                && v.len() > 32
-            {
-                anyhow::bail!("Property value exceeds maximum allowed length");
-            }
-
             set_property(camera, property, value, default, output)?;
         }
     }
@@ -189,14 +185,10 @@ fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize
 // Converts property vectors to IndexMap with formatted values
 fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> DeviceOutput<'a> {
     // Collect all properties from both VideoProcAmp and CameraControl
-    let all_properties: Vec<&webcam::PropertyInfo> = device
+    let property_outputs: IndexMap<String, PropertyOutput> = device
         .video_proc_amp_properties
         .iter()
         .chain(&device.camera_control_properties)
-        .collect();
-
-    let property_outputs: IndexMap<String, PropertyOutput> = all_properties
-        .iter()
         .map(|prop| {
             (
                 prop.name.clone(),
@@ -223,9 +215,9 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
     }
 }
 
-// Serialize device outputs to pretty-printed JSON
-fn render_json(outputs: &[DeviceOutput]) -> Result<String> {
-    serde_json::to_string_pretty(outputs).context("Failed to serialize to JSON")
+// Serialize any serializable value to pretty-printed JSON
+fn render_json<T: serde::Serialize>(value: &T) -> Result<String> {
+    serde_json::to_string_pretty(value).context("Failed to serialize to JSON")
 }
 
 // Render device outputs as human-readable text
@@ -259,25 +251,16 @@ fn display_property_value(prop: &PropertyOutput) {
     // Display the value (already formatted)
     print!("{}", current);
 
-    // Add metadata if present (only in detailed mode)
-    if prop.supported_values.is_some() || prop.default.is_some() {
-        print!(" (");
-        let mut first = true;
-
-        if let Some(ref supported) = prop.supported_values {
-            if !first {
-                print!(", ");
-            }
-            print!("Supported: {}", supported);
-            first = false;
-        }
-        if let Some(ref default) = prop.default {
-            if !first {
-                print!(", ");
-            }
-            print!("Default: {}", default);
-        }
-        print!(")");
+    // Add metadata if present
+    let mut meta = Vec::new();
+    if let Some(ref supported) = prop.supported_values {
+        meta.push(format!("Supported: {}", supported));
+    }
+    if let Some(ref default) = prop.default {
+        meta.push(format!("Default: {}", default));
+    }
+    if !meta.is_empty() {
+        print!(" ({})", meta.join(", "));
     }
 }
 
@@ -293,23 +276,23 @@ fn list_devices(include_device_path: bool, output: OutputFormat) -> Result<()> {
     // Output in requested format
     match output {
         OutputFormat::Json => {
-            let json_str = serde_json::to_string_pretty(&devices)?;
-            println!("{}", json_str);
+            println!("{}", render_json(&devices)?);
         }
         OutputFormat::Text => {
             if devices.is_empty() {
                 println!("No video capture devices found.");
             } else {
                 for device in devices {
-                    if include_device_path {
-                        if let Some(ref path) = device.device_path {
-                            println!("[{}] {} ({})", device.index, device.name, path);
-                        } else {
-                            println!("[{}] {}", device.index, device.name);
-                        }
+                    let suffix = if include_device_path {
+                        device
+                            .device_path
+                            .as_deref()
+                            .map(|p| format!(" ({})", p))
+                            .unwrap_or_default()
                     } else {
-                        println!("[{}] {}", device.index, device.name);
-                    }
+                        String::new()
+                    };
+                    println!("[{}] {}{}", device.index, device.name, suffix);
                 }
             }
         }
@@ -356,7 +339,7 @@ fn set_property(
     // Check if we're resetting all properties
     let reset_all = property.eq_ignore_ascii_case("all");
 
-    let mut results = Vec::new();
+    let mut results: Vec<SetResult> = Vec::new();
 
     for &idx in &indices {
         let device = &devices[idx];
@@ -417,59 +400,39 @@ fn set_property(
                 }
             }
 
-            results.push((
-                idx,
-                device_name,
-                prop_name.to_string(),
-                prop_value,
-                result.is_ok(),
-                result.err().map(|e| e.to_string()),
-            ));
+            results.push(SetResult {
+                index: idx,
+                name: device_name.to_string(),
+                property: prop_name.to_string(),
+                value: prop_value,
+                success: result.is_ok(),
+                error: result.err().map(|e| e.to_string()),
+            });
         }
     }
 
     // Output results
     match output {
         OutputFormat::Text => {
-            for (idx, name, prop, value_set, success, error) in &results {
-                if *success {
-                    println!("[{}] {}: {} set to {}", idx, name, prop, value_set);
+            for r in &results {
+                if r.success {
+                    println!(
+                        "[{}] {}: {} set to {}",
+                        r.index, r.name, r.property, r.value
+                    );
                 } else {
                     println!(
                         "[{}] {}: Failed to set {} - {}",
-                        idx,
-                        name,
-                        prop,
-                        error.as_ref().unwrap_or(&"Unknown error".to_string())
+                        r.index,
+                        r.name,
+                        r.property,
+                        r.error.as_deref().unwrap_or("Unknown error")
                     );
                 }
             }
         }
         OutputFormat::Json => {
-            #[derive(serde::Serialize)]
-            struct SetResult<'a> {
-                index: usize,
-                name: &'a str,
-                property: &'a str,
-                value: &'a str,
-                success: bool,
-                error: Option<&'a str>,
-            }
-
-            let json_results: Vec<SetResult> = results
-                .iter()
-                .map(|(idx, name, prop, value_set, success, error)| SetResult {
-                    index: *idx,
-                    name,
-                    property: prop,
-                    value: value_set,
-                    success: *success,
-                    error: error.as_deref(),
-                })
-                .collect();
-
-            let json_str = serde_json::to_string_pretty(&json_results)?;
-            println!("{}", json_str);
+            println!("{}", render_json(&results)?);
         }
     }
 
