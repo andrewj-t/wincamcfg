@@ -1,5 +1,11 @@
 ## [0.2.11] - 2026-03-01
 
+## [0.2.12] - 2026-03-03
+
+### Changed
+- Code quality improvements: reduce duplication and dead code (#34)
+## [0.2.11] - 2026-03-01
+
 ### Changed
 - Automated dependency updates
 
@@ -92,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.2.2]: https://github.com/andrewj-t/wincamcfg/releases/tag/v0.2.2
 [0.2.0]: https://github.com/andrewj-t/wincamcfg/releases/tag/v0.2.0
 [0.1.0]: https://github.com/andrewj-t/wincamcfg/releases/tag/v0.1.0
+
 
 
 
