@@ -255,25 +255,16 @@ fn display_property_value(prop: &PropertyOutput) {
     // Display the value (already formatted)
     print!("{}", current);
 
-    // Add metadata if present (only in detailed mode)
-    if prop.supported_values.is_some() || prop.default.is_some() {
-        print!(" (");
-        let mut first = true;
-
-        if let Some(ref supported) = prop.supported_values {
-            if !first {
-                print!(", ");
-            }
-            print!("Supported: {}", supported);
-            first = false;
-        }
-        if let Some(ref default) = prop.default {
-            if !first {
-                print!(", ");
-            }
-            print!("Default: {}", default);
-        }
-        print!(")");
+    // Add metadata if present
+    let mut meta = Vec::new();
+    if let Some(ref supported) = prop.supported_values {
+        meta.push(format!("Supported: {}", supported));
+    }
+    if let Some(ref default) = prop.default {
+        meta.push(format!("Default: {}", default));
+    }
+    if !meta.is_empty() {
+        print!(" ({})", meta.join(", "));
     }
 }
 
