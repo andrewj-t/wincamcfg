@@ -31,6 +31,16 @@ enum OutputFormat {
     Json,
 }
 
+#[derive(serde::Serialize)]
+struct SetResult {
+    index: usize,
+    name: String,
+    property: String,
+    value: String,
+    success: bool,
+    error: Option<String>,
+}
+
 /// A command-line utility for managing webcam properties
 #[derive(Parser)]
 #[command(name = "wincamcfg")]
@@ -343,7 +353,7 @@ fn set_property(
     // Check if we're resetting all properties
     let reset_all = property.eq_ignore_ascii_case("all");
 
-    let mut results = Vec::new();
+    let mut results: Vec<SetResult> = Vec::new();
 
     for &idx in &indices {
         let device = &devices[idx];
@@ -404,58 +414,39 @@ fn set_property(
                 }
             }
 
-            results.push((
-                idx,
-                device_name,
-                prop_name.to_string(),
-                prop_value,
-                result.is_ok(),
-                result.err().map(|e| e.to_string()),
-            ));
+            results.push(SetResult {
+                index: idx,
+                name: device_name.to_string(),
+                property: prop_name.to_string(),
+                value: prop_value,
+                success: result.is_ok(),
+                error: result.err().map(|e| e.to_string()),
+            });
         }
     }
 
     // Output results
     match output {
         OutputFormat::Text => {
-            for (idx, name, prop, value_set, success, error) in &results {
-                if *success {
-                    println!("[{}] {}: {} set to {}", idx, name, prop, value_set);
+            for r in &results {
+                if r.success {
+                    println!(
+                        "[{}] {}: {} set to {}",
+                        r.index, r.name, r.property, r.value
+                    );
                 } else {
                     println!(
                         "[{}] {}: Failed to set {} - {}",
-                        idx,
-                        name,
-                        prop,
-                        error.as_ref().unwrap_or(&"Unknown error".to_string())
+                        r.index,
+                        r.name,
+                        r.property,
+                        r.error.as_deref().unwrap_or("Unknown error")
                     );
                 }
             }
         }
         OutputFormat::Json => {
-            #[derive(serde::Serialize)]
-            struct SetResult<'a> {
-                index: usize,
-                name: &'a str,
-                property: &'a str,
-                value: &'a str,
-                success: bool,
-                error: Option<&'a str>,
-            }
-
-            let json_results: Vec<SetResult> = results
-                .iter()
-                .map(|(idx, name, prop, value_set, success, error)| SetResult {
-                    index: *idx,
-                    name,
-                    property: prop,
-                    value: value_set,
-                    success: *success,
-                    error: error.as_deref(),
-                })
-                .collect();
-
-            println!("{}", render_json(&json_results)?);
+            println!("{}", render_json(&results)?);
         }
     }
 
