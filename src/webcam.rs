@@ -514,7 +514,6 @@ unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<Proper
         moniker,
         |f| f.cast().context("Failed to get IAMVideoProcAmp interface"),
         &[
-            // ...existing code...
             VideoProcAmpProperty::Brightness,
             VideoProcAmpProperty::Contrast,
             VideoProcAmpProperty::Saturation,
@@ -545,7 +544,6 @@ unsafe fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<Proper
         moniker,
         |f| f.cast().context("Failed to get IAMCameraControl interface"),
         &[
-            // ...existing code...
             CameraControlProperty::Exposure,
             CameraControlProperty::Focus,
             CameraControlProperty::Pan,
