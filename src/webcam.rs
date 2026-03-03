@@ -718,11 +718,9 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
         && (numeric_value < min || numeric_value > max)
     {
         anyhow::bail!(
-            "Value {} for property '{}' is outside the safe range {}-{} (device reports: min={}, max={})",
+            "Value {} for property '{}' is outside the supported range [{}, {}]",
             numeric_value,
             property_name,
-            min,
-            max,
             min,
             max
         );
