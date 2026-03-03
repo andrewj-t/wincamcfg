@@ -143,20 +143,6 @@ fn main() -> Result<()> {
                 anyhow::bail!("Property 'all' can only be used with --default flag");
             }
 
-            // Validate property name early (skip validation for "all")
-            if !property.eq_ignore_ascii_case("all")
-                && (property.len() > 64 || !property.chars().all(|c| c.is_alphanumeric()))
-            {
-                anyhow::bail!("Invalid property name format");
-            }
-
-            // Validate value if provided
-            if let Some(ref v) = value
-                && v.len() > 32
-            {
-                anyhow::bail!("Property value exceeds maximum allowed length");
-            }
-
             set_property(camera, property, value, default, output)?;
         }
     }
