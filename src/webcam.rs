@@ -585,13 +585,12 @@ unsafe fn find_device_by_path(target_path: &str) -> Result<IMoniker> {
     }
 }
 
-/// Set a VideoProcAmp property
-pub fn set_video_proc_amp_property(
-    device: &DeviceInfo,
-    property: VideoProcAmpProperty,
-    value: i32,
-    auto: bool,
-) -> Result<()> {
+/// Shared boilerplate: initialize COM, find device, bind to IBaseFilter, invoke closure.
+/// The ComGuard lives for the duration of the closure so COM stays initialized.
+fn with_device_filter<R, F>(device: &DeviceInfo, f: F) -> Result<R>
+where
+    F: FnOnce(IBaseFilter) -> Result<R>,
+{
     let _com = unsafe { ComGuard::new()? };
 
     let target_path = device
@@ -602,23 +601,33 @@ pub fn set_video_proc_amp_property(
     let mon = unsafe { find_device_by_path(target_path)? };
     let filter: IBaseFilter =
         unsafe { mon.BindToObject(None, None) }.context("Failed to bind to device filter")?;
-    let video_proc_amp: IAMVideoProcAmp = filter
-        .cast()
-        .context("Failed to get VideoProcAmp interface")?;
 
-    let flags = if auto {
-        VideoProcAmp_Flags_Auto.0
-    } else {
-        VideoProcAmp_Flags_Manual.0
-    };
-    unsafe { video_proc_amp.Set(property.into(), value, flags) }.with_context(|| {
-        format!(
-            "Failed to set VideoProcAmp property {} to value {}",
-            property, value
-        )
-    })?;
+    f(filter)
+}
 
-    Ok(())
+/// Set a VideoProcAmp property
+pub fn set_video_proc_amp_property(
+    device: &DeviceInfo,
+    property: VideoProcAmpProperty,
+    value: i32,
+    auto: bool,
+) -> Result<()> {
+    with_device_filter(device, |filter| {
+        let iface: IAMVideoProcAmp = filter
+            .cast()
+            .context("Failed to get VideoProcAmp interface")?;
+        let flags = if auto {
+            VideoProcAmp_Flags_Auto.0
+        } else {
+            VideoProcAmp_Flags_Manual.0
+        };
+        unsafe { iface.Set(property.into(), value, flags) }.with_context(|| {
+            format!(
+                "Failed to set VideoProcAmp property {} to value {}",
+                property, value
+            )
+        })
+    })
 }
 
 /// Set a CameraControl property
@@ -628,33 +637,22 @@ pub fn set_camera_control_property(
     value: i32,
     auto: bool,
 ) -> Result<()> {
-    let _com = unsafe { ComGuard::new()? };
-
-    let target_path = device
-        .device_path
-        .as_ref()
-        .context("Device path not available")?;
-
-    let mon = unsafe { find_device_by_path(target_path)? };
-    let filter: IBaseFilter =
-        unsafe { mon.BindToObject(None, None) }.context("Failed to bind to device filter")?;
-    let camera_control: IAMCameraControl = filter
-        .cast()
-        .context("Failed to get CameraControl interface")?;
-
-    let flags = if auto {
-        CameraControl_Flags_Auto.0
-    } else {
-        CameraControl_Flags_Manual.0
-    };
-    unsafe { camera_control.Set(property.into(), value, flags) }.with_context(|| {
-        format!(
-            "Failed to set CameraControl property {} to value {}",
-            property, value
-        )
-    })?;
-
-    Ok(())
+    with_device_filter(device, |filter| {
+        let iface: IAMCameraControl = filter
+            .cast()
+            .context("Failed to get CameraControl interface")?;
+        let flags = if auto {
+            CameraControl_Flags_Auto.0
+        } else {
+            CameraControl_Flags_Manual.0
+        };
+        unsafe { iface.Set(property.into(), value, flags) }.with_context(|| {
+            format!(
+                "Failed to set CameraControl property {} to value {}",
+                property, value
+            )
+        })
+    })
 }
 
 /// Set a property by name on a device
