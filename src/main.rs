@@ -288,15 +288,16 @@ fn list_devices(include_device_path: bool, output: OutputFormat) -> Result<()> {
                 println!("No video capture devices found.");
             } else {
                 for device in devices {
-                    if include_device_path {
-                        if let Some(ref path) = device.device_path {
-                            println!("[{}] {} ({})", device.index, device.name, path);
-                        } else {
-                            println!("[{}] {}", device.index, device.name);
-                        }
+                    let suffix = if include_device_path {
+                        device
+                            .device_path
+                            .as_deref()
+                            .map(|p| format!(" ({})", p))
+                            .unwrap_or_default()
                     } else {
-                        println!("[{}] {}", device.index, device.name);
-                    }
+                        String::new()
+                    };
+                    println!("[{}] {}{}", device.index, device.name, suffix);
                 }
             }
         }
