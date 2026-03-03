@@ -189,14 +189,10 @@ fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize
 // Converts property vectors to IndexMap with formatted values
 fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> DeviceOutput<'a> {
     // Collect all properties from both VideoProcAmp and CameraControl
-    let all_properties: Vec<&webcam::PropertyInfo> = device
+    let property_outputs: IndexMap<String, PropertyOutput> = device
         .video_proc_amp_properties
         .iter()
         .chain(&device.camera_control_properties)
-        .collect();
-
-    let property_outputs: IndexMap<String, PropertyOutput> = all_properties
-        .iter()
         .map(|prop| {
             (
                 prop.name.clone(),
