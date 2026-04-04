@@ -81,3 +81,10 @@ borrow_as_ptr = "allow"
 multiple_crate_versions = "allow"
 map_unwrap_or = "allow"
 missing_errors_doc = "allow"
+
+[features]
+test-util = []
+
+[[bin]]
+name = "wincamcfg"
+path = "src/main.rs"

@@ -839,3 +839,143 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
 }
 
 // Rust guideline compliant 2026-02-21
+
+/// Trait abstraction for camera device operations.
+///
+/// Enables testable code by allowing implementations to either use real DirectShow APIs
+/// or provide mockable test fixtures. Following M-MOCKABLE-SYSCALLS from Microsoft Rust guidelines.
+pub trait CameraDevice: Clone {
+    /// Retrieve device information (name and path).
+    fn get_device_info(&self) -> Result<(Option<String>, Option<String>)>;
+    /// Get all VideoProcAmp properties from the device.
+    fn get_video_proc_amp_properties(&self) -> Result<Vec<PropertyInfo>>;
+    /// Get all CameraControl properties from the device.
+    fn get_camera_control_properties(&self) -> Result<Vec<PropertyInfo>>;
+    /// Set a VideoProcAmp property to the specified value.
+    fn set_video_proc_amp_property(
+        &mut self,
+        property: VideoProcAmpProperty,
+        value: i32,
+        auto: bool,
+    ) -> Result<()>;
+    /// Set a CameraControl property to the specified value.
+    fn set_camera_control_property(
+        &mut self,
+        property: CameraControlProperty,
+        value: i32,
+        auto: bool,
+    ) -> Result<()>;
+}
+
+/// Mockable camera device for testing (feature-gated).
+#[cfg(feature = "test-util")]
+#[derive(Clone, Debug)]
+pub struct MockCamera {
+    pub name: Option<String>,
+    pub device_path: Option<String>,
+    pub video_proc_amp_properties: Vec<PropertyInfo>,
+    pub camera_control_properties: Vec<PropertyInfo>,
+}
+
+#[cfg(feature = "test-util")]
+impl MockCamera {
+    /// Create mock camera with default properties.
+    pub fn new(name: Option<String>, device_path: Option<String>) -> Self {
+        let mut camera = Self {
+            name,
+            device_path,
+            video_proc_amp_properties: Vec::new(),
+            camera_control_properties: Vec::new(),
+        };
+        camera.video_proc_amp_properties = Self::default_video_proc_amp();
+        camera.camera_control_properties = Self::default_camera_control();
+        camera
+    }
+
+    /// Set a mock property's current value.
+    pub fn set_property_value(&mut self, property_name: &str, value: i32) -> Result<()> {
+        for prop in &mut self.video_proc_amp_properties {
+            if prop.name.eq_ignore_ascii_case(property_name) {
+                prop.current = Some(value);
+                return Ok(());
+            }
+        }
+        for prop in &mut self.camera_control_properties {
+            if prop.name.eq_ignore_ascii_case(property_name) {
+                prop.current = Some(value);
+                return Ok(());
+            }
+        }
+        Err(anyhow::anyhow!("Property not found: {}", property_name))
+    }
+
+    fn default_video_proc_amp() -> Vec<PropertyInfo> {
+        vec![
+            PropertyInfo {
+                name: "Brightness".to_string(),
+                min: Some(0),
+                max: Some(255),
+                step: Some(1),
+                default: Some(128),
+                caps: Some(VideoProcAmp_Flags_Manual.0),
+                current: Some(128),
+                capabilities: Some("Manual".to_string()),
+                property_type: PropertyType::VideoProcAmp,
+            },
+            PropertyInfo {
+                name: "PowerlineFrequency".to_string(),
+                min: Some(0),
+                max: Some(3),
+                step: Some(1),
+                default: Some(0),
+                caps: Some(VideoProcAmp_Flags_Auto.0 | VideoProcAmp_Flags_Manual.0),
+                current: Some(2),
+                capabilities: Some("Manual, Auto".to_string()),
+                property_type: PropertyType::VideoProcAmp,
+            },
+        ]
+    }
+
+    fn default_camera_control() -> Vec<PropertyInfo> {
+        vec![PropertyInfo {
+            name: "Focus".to_string(),
+            min: Some(0),
+            max: Some(255),
+            step: Some(1),
+            default: Some(128),
+            caps: Some(CameraControl_Flags_Manual.0),
+            current: Some(128),
+            capabilities: Some("Manual".to_string()),
+            property_type: PropertyType::CameraControl,
+        }]
+    }
+}
+
+#[cfg(feature = "test-util")]
+impl CameraDevice for MockCamera {
+    fn get_device_info(&self) -> Result<(Option<String>, Option<String>)> {
+        Ok((self.name.clone(), self.device_path.clone()))
+    }
+    fn get_video_proc_amp_properties(&self) -> Result<Vec<PropertyInfo>> {
+        Ok(self.video_proc_amp_properties.clone())
+    }
+    fn get_camera_control_properties(&self) -> Result<Vec<PropertyInfo>> {
+        Ok(self.camera_control_properties.clone())
+    }
+    fn set_video_proc_amp_property(
+        &mut self,
+        property: VideoProcAmpProperty,
+        value: i32,
+        _auto: bool,
+    ) -> Result<()> {
+        self.set_property_value(&property.to_string(), value)
+    }
+    fn set_camera_control_property(
+        &mut self,
+        property: CameraControlProperty,
+        value: i32,
+        _auto: bool,
+    ) -> Result<()> {
+        self.set_property_value(&property.to_string(), value)
+    }
+}
