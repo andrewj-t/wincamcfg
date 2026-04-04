@@ -6,11 +6,14 @@ description = "A command line utility for managing webcam configuration on windo
 license = "MIT"
 repository = "https://github.com/andrewj-t/wincamcfg/"
 homepage = "https://github.com/andrewj-t/wincamcfg/"
+keywords = ["webcam", "directshow", "camera", "windows"]
+categories = ["command-line-utilities", "multimedia"]
 
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 indexmap = { version = "2.13", features = ["serde"] }
+mimalloc = { version = "0.1" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_with = "3.18"
@@ -28,3 +31,53 @@ windows = { version = ">=0.59, <=0.62", features = [
 
 [build-dependencies]
 winresource = "0.1"
+
+[lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "allow"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "allow"
+semicolon_if_nothing_returned = "allow"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "allow"
+unnecessary_safety_doc = "allow"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+literal_string_with_formatting_args = "allow"
+uninlined_format_args = "allow"
+doc_markdown = "allow"
+wildcard_imports = "allow"
+implicit_clone = "allow"
+must_use_candidate = "allow"
+borrow_as_ptr = "allow"
+multiple_crate_versions = "allow"
+map_unwrap_or = "allow"
+missing_errors_doc = "allow"

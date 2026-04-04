@@ -6,7 +6,7 @@ fn main() {
     {
         // Get version from Cargo.toml; Windows manifests require a 4-part version
         let version = env!("CARGO_PKG_VERSION");
-        let manifest_version = format!("{}.0", version);
+        let manifest_version = format!("{version}.0");
 
         let mut res = winresource::WindowsResource::new();
         let manifest = format!(

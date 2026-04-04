@@ -1,9 +1,24 @@
-/// Webcam and DirectShow interaction module
+/// Webcam and DirectShow interaction module.
 ///
 /// This module handles all DirectShow COM interactions for webcam device enumeration,
 /// property querying and setting, and device information retrieval. It provides a domain
 /// layer abstraction over Windows DirectShow APIs with type-safe property enums and
 /// value formatting.
+///
+/// # Windows APIs
+///
+/// Uses the following DirectShow/COM interfaces:
+/// - `ICreateDevEnum` — enumerates device categories
+/// - `IEnumMoniker` — iterates through device monikers
+/// - `IMoniker` — represents device identity and binding point
+/// - `IPropertyBag` — reads device metadata (name, path)
+/// - `IBaseFilter` — device filter interface
+/// - `IAMVideoProcAmp` — video processing properties (brightness, contrast, etc.)
+/// - `IAMCameraControl` — camera control properties (exposure, focus, etc.)
+///
+/// # Debugging
+///
+/// Set `RUST_LOG=trace` to see detailed COM initialization and property enumeration traces.
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
@@ -13,7 +28,7 @@ use windows::{
     Win32::System::Com::StructuredStorage::IPropertyBag, Win32::System::Com::*, core::*,
 };
 
-/// RAII guard for COM initialization/cleanup
+/// RAII guard for COM initialization/cleanup.
 ///
 /// COM interfaces (ICreateDevEnum, IEnumMoniker, IMoniker, IPropertyBag, etc.)
 /// are automatically cleaned up when they go out of scope via their Drop implementations
@@ -21,14 +36,25 @@ use windows::{
 struct ComGuard;
 
 impl ComGuard {
+    /// Initializes COM for apartment-threaded use on the current thread.
+    ///
+    /// # Safety
+    ///
+    /// Callers must ensure this is called from a thread that has not already initialized
+    /// COM with an incompatible threading model. Calling from multiple threads is safe
+    /// as each thread has its own COM apartment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if COM initialization fails with a code other than `S_FALSE`.
     unsafe fn new() -> Result<Self> {
-        unsafe {
-            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            // S_OK (0) = initialized, S_FALSE (1) = already initialized
-            // Both are considered success for our purposes
-            if hr.is_err() {
-                return Err(anyhow::anyhow!("Failed to initialize COM: {:?}", hr));
-            }
+        // SAFETY: FFI call; safe as long as called once per thread. Subsequent calls on
+        // the same thread return S_FALSE which is treated as success. See documentation.
+        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        // S_OK (0) = initialized, S_FALSE (1) = already initialized
+        // Both are considered success for our purposes
+        if hr.is_err() {
+            return Err(anyhow::anyhow!("Failed to initialize COM: {:?}", hr));
         }
         Ok(ComGuard)
     }
@@ -36,14 +62,22 @@ impl ComGuard {
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
+        // SAFETY: FFI call; safe because ComGuard is only constructed via new(),
+        // pairing is enforced by RAII.
         unsafe {
             CoUninitialize();
         }
     }
 }
 
-// DirectShow GUIDs for device enumeration
+/// System Device Enumerator class ID.
+///
+/// Source: DirectShow SDK, `ksmedia.h`, `CLSID_SystemDeviceEnum`.
 const CLSID_SYSTEM_DEVICE_ENUM: GUID = GUID::from_u128(0x62be5d10_60eb_11d0_bd3b_00a0c911ce86);
+
+/// Video input device filter category GUID.
+///
+/// Source: DirectShow SDK, `ksmedia.h`, `CLSID_VideoInputDeviceCategory`.
 const CLSID_VIDEO_INPUT_DEVICE_CATEGORY: GUID =
     GUID::from_u128(0x860bb310_5d01_11d0_bd3b_00a0c911ce86);
 
@@ -99,8 +133,8 @@ pub enum PropertyType {
     CameraControl,
 }
 
-/// Device information including metadata and all available properties
-#[derive(Serialize, Deserialize)]
+/// Device information including metadata and all available properties.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub name: Option<String>,
     pub device_path: Option<String>,
@@ -156,10 +190,15 @@ pub fn build_enum_display(property_name: &str, min: i32, max: i32) -> Option<Str
     Some(display).filter(|s| !s.is_empty())
 }
 
-/// Parse a value string to (value, auto_mode) tuple
-/// Handles both human-readable values (50Hz, On, Off, Auto) and numeric values
-/// Returns Ok((value, true)) if "Auto" is specified
-/// Returns Ok((parsed_value, false)) for other inputs
+/// Parse a value string to (value, auto_mode) tuple.
+///
+/// Handles both human-readable values (50Hz, On, Off, Auto) and numeric values.
+/// Returns Ok((value, true)) if "Auto" is specified.
+/// Returns Ok((parsed_value, false)) for other inputs.
+///
+/// # Errors
+///
+/// Returns an error if the input exceeds 32 characters, contains invalid characters, or parsing fails.
 pub fn parse_property_value(property_name: &str, value_str: &str) -> Result<(i32, bool)> {
     // Sanitize input: limit length to prevent potential issues
     if value_str.len() > 32 {
@@ -209,8 +248,8 @@ pub fn parse_property_value(property_name: &str, value_str: &str) -> Result<(i32
     Ok((v, false))
 }
 
-/// Simplified device list item for list command
-#[derive(Serialize, Deserialize)]
+/// Simplified device list item for list command.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeviceListItem {
     pub index: usize,
     pub name: String,
@@ -218,8 +257,13 @@ pub struct DeviceListItem {
     pub device_path: Option<String>,
 }
 
-/// List all video capture devices (lightweight - names and paths only)
-/// This is a simplified version of enumerate_devices() for the list command
+/// List all video capture devices (lightweight - names and paths only).
+///
+/// This is a simplified version of `enumerate_devices()` for the list command.
+///
+/// # Errors
+///
+/// Returns an error if device enumeration fails.
 #[instrument]
 pub fn list_devices() -> Result<Vec<DeviceListItem>> {
     debug!("Listing video capture devices");
@@ -237,9 +281,14 @@ pub fn list_devices() -> Result<Vec<DeviceListItem>> {
         .collect())
 }
 
-/// Enumerate all video capture devices and return their information
+/// Enumerate all video capture devices and return their information.
+///
+/// # Errors
+///
+/// Returns an error if COM initialization fails or if the device enumerator cannot be created.
 #[instrument]
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
+    // SAFETY: All COM interfaces are obtained from DirectShow; lifetimes managed by windows-rs Drop.
     unsafe {
         debug!("Initializing COM");
         let _com = ComGuard::new()?;
@@ -372,7 +421,7 @@ fn get_property_string(moniker: &IMoniker, prop_name: &str) -> Result<String> {
     use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VariantClear};
     use windows::core::HSTRING;
 
-    // Bind to property bag (safe)
+    // SAFETY: moniker is a valid IMoniker obtained from DirectShow enumeration.
     let prop_bag: IPropertyBag =
         unsafe { moniker.BindToStorage(None, None) }.with_context(|| {
             format!(
@@ -385,13 +434,14 @@ fn get_property_string(moniker: &IMoniker, prop_name: &str) -> Result<String> {
     let mut var = VARIANT::default();
     let prop_name_hstr = HSTRING::from(prop_name);
 
-    // Read property value (unsafe only for FFI call)
+    // SAFETY: prop_bag is a valid IPropertyBag; var is default-initialized VARIANT.
     unsafe { prop_bag.Read(PCWSTR(prop_name_hstr.as_ptr()), &mut var, None) }
         .with_context(|| format!("Failed to read property '{}'", prop_name))?;
 
-    // Extract the value (safe)
+    // Extract the value
+    // SAFETY: Only accessed after confirming vt == VT_BSTR.
     let result = if unsafe { var.Anonymous.Anonymous.vt } == VT_BSTR {
-        // Use windows::core::BSTR for conversion
+        // SAFETY: Only accessed after confirming vt == VT_BSTR.
         let bstr = unsafe { &var.Anonymous.Anonymous.Anonymous.bstrVal };
         let value = bstr.to_string();
         trace!(property_value = %value, "Property value retrieved");
@@ -400,7 +450,7 @@ fn get_property_string(moniker: &IMoniker, prop_name: &str) -> Result<String> {
         Err(anyhow::anyhow!("Property '{}' is not a BSTR", prop_name))
     };
 
-    // Always clear VARIANT regardless of success or failure (unsafe only for FFI call)
+    // SAFETY: Must be called to free BSTR regardless of success; var is a local stack-allocated VARIANT.
     let _ = unsafe { VariantClear(&mut var) };
 
     result
@@ -447,6 +497,7 @@ where
     GetFn: Fn(&IFace, i32, &mut i32, &mut i32) -> windows::core::Result<()>,
 {
     debug!("Binding moniker to IBaseFilter");
+    // SAFETY: moniker is a valid IMoniker; IBaseFilter is the standard bind target.
     let filter: IBaseFilter =
         unsafe { moniker.BindToObject(None, None) }.context("Failed to bind to IBaseFilter")?;
     let iface = iface_cast(filter)?;
@@ -503,7 +554,13 @@ where
     Ok(capabilities)
 }
 
+/// Get VideoProcAmp properties from a device moniker.
+///
+/// # Errors
+///
+/// Returns an error if the interface cannot be obtained or device enumeration fails.
 unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
+    // SAFETY: Interfaces are validly obtained; property IDs are from the VideoProcAmpProperty enum.
     get_properties(
         moniker,
         |f| f.cast().context("Failed to get IAMVideoProcAmp interface"),
@@ -524,16 +581,24 @@ unsafe fn get_video_proc_amp_properties(moniker: &IMoniker) -> Result<Vec<Proper
             VideoProcAmpProperty::DigitalMultiplierLimit,
         ],
         |iface: &IAMVideoProcAmp, prop_id, min, max, step, default, caps| unsafe {
+            // SAFETY: iface is a valid IAMVideoProcAmp; arguments are mutable refs to valid i32s.
             iface.GetRange(prop_id, min, max, step, default, caps)
         },
         |iface: &IAMVideoProcAmp, prop_id, value, flags| unsafe {
+            // SAFETY: iface is a valid IAMVideoProcAmp; arguments are mutable refs to valid i32s.
             iface.Get(prop_id, value, flags)
         },
         PropertyType::VideoProcAmp,
     )
 }
 
+/// Get CameraControl properties from a device moniker.
+///
+/// # Errors
+///
+/// Returns an error if the interface cannot be obtained or device enumeration fails.
 unsafe fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<PropertyInfo>> {
+    // SAFETY: Interfaces are validly obtained; property IDs are from the CameraControlProperty enum.
     get_properties(
         moniker,
         |f| f.cast().context("Failed to get IAMCameraControl interface"),
@@ -547,57 +612,69 @@ unsafe fn get_camera_control_properties(moniker: &IMoniker) -> Result<Vec<Proper
             CameraControlProperty::Iris,
         ],
         |iface: &IAMCameraControl, prop_id, min, max, step, default, caps| unsafe {
+            // SAFETY: iface is a valid IAMCameraControl; arguments are mutable refs to valid i32s.
             iface.GetRange(prop_id, min, max, step, default, caps)
         },
         |iface: &IAMCameraControl, prop_id, value, flags| unsafe {
+            // SAFETY: iface is a valid IAMCameraControl; arguments are mutable refs to valid i32s.
             iface.Get(prop_id, value, flags)
         },
         PropertyType::CameraControl,
     )
 }
 
-/// Find a device moniker by its DirectShow device path
-/// Used by set_property functions to locate the device for property modification
+/// Find a device moniker by its DirectShow device path.
+///
+/// Used by set_property functions to locate the device for property modification.
+///
+/// # Errors
+///
+/// Returns an error if no devices are found or the target device path is not found.
 unsafe fn find_device_by_path(target_path: &str) -> Result<IMoniker> {
+    // SAFETY: COM is caller-initialized (called from with_device_filter).
+    let dev_enum: ICreateDevEnum =
+        unsafe { CoCreateInstance(&CLSID_SYSTEM_DEVICE_ENUM, None, CLSCTX_INPROC_SERVER)? };
+
+    let mut enum_moniker: Option<IEnumMoniker> = None;
+    // SAFETY: dev_enum is valid; enum_moniker is a valid mutable ref.
     unsafe {
-        let dev_enum: ICreateDevEnum =
-            CoCreateInstance(&CLSID_SYSTEM_DEVICE_ENUM, None, CLSCTX_INPROC_SERVER)?;
+        dev_enum.CreateClassEnumerator(&CLSID_VIDEO_INPUT_DEVICE_CATEGORY, &mut enum_moniker, 0)?
+    };
 
-        let mut enum_moniker: Option<IEnumMoniker> = None;
-        dev_enum.CreateClassEnumerator(&CLSID_VIDEO_INPUT_DEVICE_CATEGORY, &mut enum_moniker, 0)?;
+    let Some(enum_moniker) = enum_moniker else {
+        anyhow::bail!("No video devices found");
+    };
 
-        let Some(enum_moniker) = enum_moniker else {
-            anyhow::bail!("No video devices found");
-        };
+    loop {
+        let mut monikers: [Option<IMoniker>; 1] = [None];
+        let mut fetched = 0u32;
 
-        loop {
-            let mut monikers: [Option<IMoniker>; 1] = [None];
-            let mut fetched = 0u32;
+        // SAFETY: enum_moniker is valid; monikers and fetched are valid mutable refs.
+        let hr = unsafe { enum_moniker.Next(&mut monikers, Some(&mut fetched)) };
 
-            let hr = enum_moniker.Next(&mut monikers, Some(&mut fetched));
-
-            if hr != S_OK || fetched == 0 {
-                break;
-            }
-
-            if let Some(mon) = monikers[0].take()
-                && let Ok(path) = get_device_path(&mon)
-                && path == target_path
-            {
-                return Ok(mon);
-            }
+        if hr != S_OK || fetched == 0 {
+            break;
         }
 
-        anyhow::bail!("Device not found")
+        if let Some(mon) = monikers[0].take()
+            && let Ok(path) = get_device_path(&mon)
+            && path == target_path
+        {
+            return Ok(mon);
+        }
     }
+
+    anyhow::bail!("Device not found")
 }
 
 /// Shared boilerplate: initialize COM, find device, bind to IBaseFilter, invoke closure.
+///
 /// The ComGuard lives for the duration of the closure so COM stays initialized.
 fn with_device_filter<R, F>(device: &DeviceInfo, f: F) -> Result<R>
 where
     F: FnOnce(IBaseFilter) -> Result<R>,
 {
+    // SAFETY: Thread-safe initialization; RAII ensures CoUninitialize is called.
     let _com = unsafe { ComGuard::new()? };
 
     let target_path = device
@@ -605,14 +682,20 @@ where
         .as_ref()
         .context("Device path not available")?;
 
+    // SAFETY: COM is initialized in the line above; target path is validated by caller.
     let mon = unsafe { find_device_by_path(target_path)? };
+    // SAFETY: mon was obtained from a valid DirectShow enumerator.
     let filter: IBaseFilter =
         unsafe { mon.BindToObject(None, None) }.context("Failed to bind to device filter")?;
 
     f(filter)
 }
 
-/// Set a VideoProcAmp property
+/// Set a VideoProcAmp property on a device.
+///
+/// # Errors
+///
+/// Returns an error if the device path is missing, the interface cannot be obtained, or the set operation fails.
 pub fn set_video_proc_amp_property(
     device: &DeviceInfo,
     property: VideoProcAmpProperty,
@@ -628,6 +711,7 @@ pub fn set_video_proc_amp_property(
         } else {
             VideoProcAmp_Flags_Manual.0
         };
+        // SAFETY: iface is obtained via valid cast(); property.into() maps to the DirectShow enum value.
         unsafe { iface.Set(property.into(), value, flags) }.with_context(|| {
             format!(
                 "Failed to set VideoProcAmp property {} to value {}",
@@ -637,7 +721,11 @@ pub fn set_video_proc_amp_property(
     })
 }
 
-/// Set a CameraControl property
+/// Set a CameraControl property on a device.
+///
+/// # Errors
+///
+/// Returns an error if the device path is missing, the interface cannot be obtained, or the set operation fails.
 pub fn set_camera_control_property(
     device: &DeviceInfo,
     property: CameraControlProperty,
@@ -653,6 +741,7 @@ pub fn set_camera_control_property(
         } else {
             CameraControl_Flags_Manual.0
         };
+        // SAFETY: iface is obtained via valid cast(); property.into() maps to the DirectShow enum value.
         unsafe { iface.Set(property.into(), value, flags) }.with_context(|| {
             format!(
                 "Failed to set CameraControl property {} to value {}",
@@ -662,15 +751,22 @@ pub fn set_camera_control_property(
     })
 }
 
-/// Set a property by name on a device
+/// Set a property by name on a device.
+///
 /// High-level function that:
 /// - Parses the value string (handles Auto, 50Hz, On/Off, etc.)
 /// - Validates the property exists and value is within safe ranges
-/// - Determines if it's a VideoProcAmp or CameraControl property
+/// - Determines if it's a VideoProcAmp or `CameraControl` property
 /// - Calls the appropriate low-level setter function
+///
+/// # Errors
+///
+/// Returns an error if the property name is invalid, contains non-alphanumeric characters,
+/// exceeds 64 characters, is not found on the device, the value is out of range,
+/// or the set operation fails.
 pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -> Result<()> {
     // Sanitize property name - only allow alphanumeric characters
-    if !property_name.chars().all(|c| c.is_alphanumeric()) {
+    if !property_name.chars().all(char::is_alphanumeric) {
         anyhow::bail!("Invalid property name: contains non-alphanumeric characters");
     }
 
@@ -720,12 +816,20 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
 
     match property_type {
         PropertyType::VideoProcAmp => {
+            #[expect(
+                clippy::map_err_ignore,
+                reason = "parse error is not useful; we provide domain context"
+            )]
             let prop_enum: VideoProcAmpProperty = property_name
                 .parse()
                 .map_err(|_| anyhow::anyhow!("Unknown VideoProcAmp property: {}", property_name))?;
             set_video_proc_amp_property(device, prop_enum, numeric_value, auto_mode)
         }
         PropertyType::CameraControl => {
+            #[expect(
+                clippy::map_err_ignore,
+                reason = "parse error is not useful; we provide domain context"
+            )]
             let prop_enum: CameraControlProperty = property_name.parse().map_err(|_| {
                 anyhow::anyhow!("Unknown CameraControl property: {}", property_name)
             })?;
@@ -733,3 +837,5 @@ pub fn set_property(device: &DeviceInfo, property_name: &str, value_str: &str) -
         }
     }
 }
+
+// Rust guideline compliant 2026-02-21

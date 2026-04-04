@@ -1,11 +1,17 @@
+//! CLI entry point for wincamcfg; parses arguments and dispatches to webcam operations.
+
 pub mod webcam;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
+use mimalloc::MiMalloc;
 use serde_with::skip_serializing_none;
 use tracing::{debug, info, instrument};
 use tracing_subscriber::EnvFilter;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 // Output structures for JSON/text rendering
 #[skip_serializing_none]
@@ -25,13 +31,13 @@ struct PropertyOutput {
     supported_values: Option<String>,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum OutputFormat {
     Text,
     Json,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 struct SetResult {
     index: usize,
     name: String,
@@ -83,7 +89,7 @@ enum Commands {
         #[arg(short, long)]
         camera: String,
 
-        /// Property to set (e.g., PowerlineFrequency, Brightness, Contrast), or "all" to reset all properties (requires --default)
+        /// Property to set (e.g., `PowerlineFrequency`, `Brightness`, `Contrast`), or "all" to reset all properties (requires --default)
         #[arg(short, long)]
         property: String,
 
@@ -118,7 +124,7 @@ fn main() -> Result<()> {
         .with_line_number(true)
         .init();
 
-    debug!("Command: {:?}", std::env::args().collect::<Vec<_>>());
+    debug!(args = ?std::env::args().collect::<Vec<String>>(), "cli.invoked");
 
     match cli.command {
         Commands::List {
@@ -150,7 +156,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Parse camera selection and return device indices
+/// Parse camera selection and return device indices.
+///
+/// # Errors
+///
+/// Returns an error if the input exceeds 16 characters, contains non-digit characters
+/// (when not "all"), or if the index is out of bounds.
 fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize>> {
     // Sanitize input: limit length
     if camera.len() > 16 {
@@ -183,7 +194,7 @@ fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize
 
 // Build device output structure from domain DeviceInfo
 // Converts property vectors to IndexMap with formatted values
-fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> DeviceOutput<'a> {
+fn build_device_output(idx: usize, device: &webcam::DeviceInfo) -> DeviceOutput<'_> {
     // Collect all properties from both VideoProcAmp and CameraControl
     let property_outputs: IndexMap<String, PropertyOutput> = device
         .video_proc_amp_properties
@@ -254,16 +265,21 @@ fn display_property_value(prop: &PropertyOutput) {
     // Add metadata if present
     let mut meta = Vec::new();
     if let Some(ref supported) = prop.supported_values {
-        meta.push(format!("Supported: {}", supported));
+        meta.push(format!("Supported: {supported}"));
     }
     if let Some(ref default) = prop.default {
-        meta.push(format!("Default: {}", default));
+        meta.push(format!("Default: {default}"));
     }
     if !meta.is_empty() {
         print!(" ({})", meta.join(", "));
     }
 }
 
+/// List all video capture devices.
+///
+/// # Errors
+///
+/// Returns an error if device enumeration fails or if JSON serialization fails.
 #[instrument(skip(output))]
 fn list_devices(include_device_path: bool, output: OutputFormat) -> Result<()> {
     debug!(include_device_path, output_format = ?output, "Listing devices");
@@ -287,12 +303,12 @@ fn list_devices(include_device_path: bool, output: OutputFormat) -> Result<()> {
                         device
                             .device_path
                             .as_deref()
-                            .map(|p| format!(" ({})", p))
+                            .map(|p| format!(" ({p})"))
                             .unwrap_or_default()
                     } else {
                         String::new()
                     };
-                    println!("[{}] {}{}", device.index, device.name, suffix);
+                    println!("[{}] {}{suffix}", device.index, device.name);
                 }
             }
         }
@@ -301,6 +317,15 @@ fn list_devices(include_device_path: bool, output: OutputFormat) -> Result<()> {
     Ok(())
 }
 
+/// Get property values from specified device(s).
+///
+/// # Errors
+///
+/// Returns an error if device enumeration fails, camera index is invalid, or JSON serialization fails.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "clap passes String and OutputFormat by value"
+)]
 #[instrument(skip(output))]
 fn get_device_properties(camera: String, output: OutputFormat) -> Result<()> {
     debug!(camera = %camera, output_format = ?output, "Getting device properties");
@@ -322,6 +347,16 @@ fn get_device_properties(camera: String, output: OutputFormat) -> Result<()> {
     Ok(())
 }
 
+/// Set a property value on specified device(s).
+///
+/// # Errors
+///
+/// Returns an error if device enumeration fails, camera index is invalid, property is not found,
+/// value is out of range, or the set operation fails.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "clap passes String and OutputFormat by value"
+)]
 #[instrument(skip(output))]
 fn set_property(
     camera: String,
@@ -356,7 +391,7 @@ fn set_property(
                     let val = p
                         .default
                         .map(|v| webcam::format_property_value(&p.name, v))
-                        .unwrap_or_else(|| "".to_string());
+                        .unwrap_or_default();
                     (p.name.as_str(), val)
                 })
                 .collect()
@@ -372,14 +407,10 @@ fn set_property(
                     .map(|p| {
                         p.default
                             .map(|v| webcam::format_property_value(&p.name, v))
-                            .unwrap_or_else(|| "".to_string())
+                            .unwrap_or_default()
                     })
                     .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Property '{}' not found on device '{}'",
-                            property,
-                            device_name
-                        )
+                        anyhow::anyhow!("Property '{property}' not found on device '{device_name}'")
                     })?
             } else {
                 value.clone().unwrap() // Safe because we validated earlier
@@ -392,11 +423,11 @@ fn set_property(
             let result = webcam::set_property(device, prop_name, &prop_value);
 
             match &result {
-                Ok(_) => {
-                    info!(device_index = idx, device_name, property = %prop_name, value = %prop_value, "Property set successfully")
+                Ok(()) => {
+                    info!(device_index = idx, device_name, property = %prop_name, value = %prop_value, "Property set successfully");
                 }
                 Err(e) => {
-                    debug!(device_index = idx, device_name, property = %prop_name, error = %e, "Failed to set property")
+                    debug!(device_index = idx, device_name, property = %prop_name, error = %e, "Failed to set property");
                 }
             }
 
