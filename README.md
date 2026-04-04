@@ -190,3 +190,89 @@ MIT License - See [LICENSE](LICENSE) for details.
 ## Contributing
 
 Found a bug or want to add a feature? PRs are welcome! Please include working code with your contribution.
+
+## Testing
+
+### Unit Tests with Mock Cameras
+
+The project includes trait-based mocking for comprehensive unit testing without requiring physical cameras or DirectShow. This enables CI/CD pipelines to run full test suites on systems without video hardware.
+
+#### Running Tests
+
+```bash
+# Run all tests with mock camera support
+cargo test --features test-util
+
+# Run tests without building binary
+cargo test --lib --features test-util
+
+# Run specific test
+cargo test --features test-util -- mock_camera_creation
+```
+
+#### Using MockCamera in Your Tests
+
+The `MockCamera` struct provides a testable implementation of camera device operations:
+
+```rust
+#[test]
+fn test_powerline_frequency_setting() -> Result<()> {
+    let mut camera = MockCamera::new(
+        Some("Test Camera".to_string()),
+        Some("/dev/video0".to_string()),
+    );
+
+    // Set powerline frequency to 50Hz
+    camera.set_video_proc_amp_property(
+        VideoProcAmpProperty::PowerlineFrequency,
+        1,  // 1 = 50Hz
+        false,
+    )?;
+
+    // Verify the value was set
+    let props = camera.get_video_proc_amp_properties()?;
+    let freq = props
+        .iter()
+        .find(|p| p.name == "PowerlineFrequency")
+        .unwrap();
+    assert_eq!(freq.current, Some(1));
+
+    Ok(())
+}
+```
+
+#### Available Mock Properties
+
+The `MockCamera` comes pre-configured with test fixtures for:
+
+**VideoProcAmp Properties:**
+- `Brightness` (0-255, default: 128)
+- `PowerlineFrequency` (0-3, where 1=50Hz, 2=60Hz)
+
+**CameraControl Properties:**
+- `Focus` (0-255, default: 128)
+
+#### CameraDevice Trait
+
+Both real DirectShow devices and `MockCamera` implement the `CameraDevice` trait, enabling write-once, test-anywhere property code:
+
+```rust
+pub trait CameraDevice: Clone {
+    fn get_device_info(&self) -> Result<(Option<String>, Option<String>)>;
+    fn get_video_proc_amp_properties(&self) -> Result<Vec<PropertyInfo>>;
+    fn get_camera_control_properties(&self) -> Result<Vec<PropertyInfo>>;
+    fn set_video_proc_amp_property(&mut self, property: VideoProcAmpProperty, value: i32, auto: bool) -> Result<()>;
+    fn set_camera_control_property(&mut self, property: CameraControlProperty, value: i32, auto: bool) -> Result<()>;
+}
+```
+
+#### Feature Flag
+
+Mock functionality is feature-gated behind `test-util` to keep test code out of production builds:
+
+```toml
+[features]
+test-util = []
+```
+
+When `test-util` is disabled (default), `MockCamera` is not compiled. This follows Microsoft Rust guideline M-TEST-UTIL.
