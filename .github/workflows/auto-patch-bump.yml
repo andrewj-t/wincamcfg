@@ -11,10 +11,12 @@ permissions:
 jobs:
   bump-version:
     runs-on: ubuntu-latest
-    # Only run on Dependabot PRs for Cargo (not github-actions)
+    # Only run on Dependabot PRs for Cargo. The branch ref is the reliable
+    # ecosystem signal — PR titles for grouped updates use the group name
+    # (e.g. "gha-deps") and don't contain the ecosystem string.
     if: |
       github.actor == 'dependabot[bot]' &&
-      !contains(github.event.pull_request.title, 'github-actions')
+      startsWith(github.head_ref, 'dependabot/cargo/')
     
     steps:
       - name: Checkout PR branch
