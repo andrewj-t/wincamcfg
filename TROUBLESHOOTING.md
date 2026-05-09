@@ -1,22 +1,22 @@
 # Troubleshooting
 
-## Enabling Trace Logging
+## Enabling trace logging
 
-`wincamcfg` uses Rust's `tracing` framework for logging. You can enable detailed trace logs to diagnose issues by setting the `RUST_LOG` environment variable to `trace`.
+`wincamcfg` uses Rust's `tracing` framework for logging. Set `RUST_LOG=trace` to get detailed diagnostic output.
 
-**Enable trace logging for a single command:**
+For a single command:
 
 ```powershell
 $env:RUST_LOG="trace"; wincamcfg list
 ```
 
-**Enable for specific modules only (wincamcfg code, not dependencies):**
+For wincamcfg code only (skipping dependency noise):
 
 ```powershell
 $env:RUST_LOG="wincamcfg=trace"; wincamcfg set --camera 0 --property PowerlineFrequency --value 50Hz
 ```
 
-**Set for entire PowerShell session:**
+For an entire PowerShell session:
 
 ```powershell
 $env:RUST_LOG="trace"
@@ -25,21 +25,21 @@ wincamcfg get --camera 0
 # ... trace logs will be enabled for all commands in this session
 ```
 
-### Saving Logs to File
+### Saving logs to a file
 
 ```powershell
 $env:RUST_LOG="trace"; wincamcfg list 2> debug.log
 ```
 
-**Or capture both stdout and stderr:**
+To capture both stdout and stderr:
 
 ```powershell
 $env:RUST_LOG="trace"; wincamcfg list *> debug.log
 ```
 
-## Common Issues
+## Common issues
 
-### Camera Not Found
+### Camera not found
 
 If `wincamcfg list` doesn't show your camera:
 
@@ -53,7 +53,7 @@ If `wincamcfg list` doesn't show your camera:
 $env:RUST_LOG="trace"; wincamcfg list
 ```
 
-### Property Not Supported
+### Property not supported
 
 Not all cameras support all properties. Use `get` to see which properties your camera supports:
 
@@ -63,28 +63,22 @@ wincamcfg get --camera 0
 
 Properties that show `value: None` or are missing entirely are not supported by your camera hardware.
 
-### "Access Denied" or Permission Errors
+### "Access denied" or permission errors
 
 Some cameras may be in use by another application. Close other programs that might be using the camera (video conferencing apps, camera apps, etc.) and try again.
 
-## Reporting Issues
+## Reporting issues
 
-When reporting issues, please include:
+When reporting an issue, please include:
 
-1. **Version information:**
-
-   ```powershell
-   wincamcfg --version
-   ```
-
-2. **Your camera model** (from `wincamcfg get --camera <CAMERA>`)
-
-3. **Trace logs** showing the issue:
+1. Version, from `wincamcfg --version`
+2. Camera model, from `wincamcfg get --camera <CAMERA>`
+3. Trace log of the failing command:
 
    ```powershell
    $env:RUST_LOG="trace"; wincamcfg [your command] 2> debug.log
    ```
 
-4. **Windows version** and any relevant system information
+4. Windows version and anything else about the system that seems relevant
 
-You can then attach the `debug.log` file when reporting the issue.
+Attach the `debug.log` file to the issue.

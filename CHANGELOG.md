@@ -1,7 +1,14 @@
+## [0.2.15] - 2026-05-09
+
+### Changed
+- Update Rust dependencies: clap 4.6.0→4.6.1, indexmap 2.13→2.14, serde_with 3.18→3.19, plus transitive bumps (hashbrown, cc, libc, wasm-bindgen, etc.)
+
 ## [0.2.14] - 2026-05-01
 
 ### Changed
-- Automated dependency updates
+- Update GitHub Actions workflow dependencies: actions/checkout v4→v6, softprops/action-gh-release v2→v3
+
+Note: no application code or Rust dependency changes in this release. The version was bumped by the auto-patch-bump workflow on a workflow-only Dependabot PR. The trigger condition has since been corrected (see #40) so future workflow-only updates will not bump the app version.
 
 ## [0.2.13] - 2026-04-01
 
