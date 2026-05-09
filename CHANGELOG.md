@@ -8,7 +8,7 @@
 ### Changed
 - Update GitHub Actions workflow dependencies: actions/checkout v4→v6, softprops/action-gh-release v2→v3
 
-Note: no application code or Rust dependency changes in this release — the version was bumped by the auto-patch-bump workflow on a workflow-only Dependabot PR. The trigger condition has since been corrected (see #40) so future workflow-only updates will not bump the app version.
+Note: no application code or Rust dependency changes in this release. The version was bumped by the auto-patch-bump workflow on a workflow-only Dependabot PR. The trigger condition has since been corrected (see #40) so future workflow-only updates will not bump the app version.
 
 ## [0.2.13] - 2026-04-01
 
