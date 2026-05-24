@@ -14,7 +14,7 @@ indexmap = { version = "2.14", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = "0.3"
 windows = { version = ">=0.59, <=0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",

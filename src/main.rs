@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
 use tracing::{debug, info, instrument};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 
 // Output structures for JSON/text rendering
 #[derive(Debug, serde::Serialize)]
@@ -107,11 +107,14 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize tracing with environment-based filtering
+    // Initialize tracing. RUST_LOG accepts a single level (trace/debug/info/warn/error/off).
+    let level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|s| s.parse::<LevelFilter>().ok())
+        .unwrap_or(LevelFilter::WARN);
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
+        .with_max_level(level)
         .with_target(true)
         .with_thread_ids(false)
         .with_file(true)

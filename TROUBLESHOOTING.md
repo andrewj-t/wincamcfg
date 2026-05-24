@@ -2,18 +2,12 @@
 
 ## Enabling trace logging
 
-`wincamcfg` uses Rust's `tracing` framework for logging. Set `RUST_LOG=trace` to get detailed diagnostic output.
+`wincamcfg` uses Rust's `tracing` framework for logging. Set `RUST_LOG` to one of `trace`, `debug`, `info`, `warn`, `error`, or `off` to control verbosity. The default is `warn`.
 
 For a single command:
 
 ```powershell
 $env:RUST_LOG="trace"; wincamcfg list
-```
-
-For wincamcfg code only (skipping dependency noise):
-
-```powershell
-$env:RUST_LOG="wincamcfg=trace"; wincamcfg set --camera 0 --property PowerlineFrequency --value 50Hz
 ```
 
 For an entire PowerShell session:
