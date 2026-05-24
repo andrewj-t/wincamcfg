@@ -21,8 +21,10 @@ struct DeviceOutput<'a> {
 #[derive(Debug, serde::Serialize)]
 struct PropertyOutput {
     value: Option<String>,
+    mode: Option<String>,
     default: Option<String>,
     supported_values: Option<String>,
+    modes_supported: Option<String>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -196,6 +198,11 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
                     value: prop
                         .current
                         .map(|v| webcam::format_property_value(&prop.name, v)),
+                    mode: prop
+                        .caps
+                        .zip(prop.current_flags)
+                        .and_then(|(caps, flags)| webcam::current_mode(caps, flags))
+                        .map(String::from),
                     default: prop
                         .default
                         .map(|v| webcam::format_property_value(&prop.name, v)),
@@ -203,6 +210,7 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
                         .min
                         .and_then(|min| prop.max.map(|max| (min, max)))
                         .and_then(|(min, max)| webcam::build_enum_display(&prop.name, min, max)),
+                    modes_supported: prop.capabilities.clone(),
                 },
             )
         })
@@ -248,13 +256,22 @@ fn display_property_value(prop: &PropertyOutput) {
         return;
     };
 
-    // Display the value (already formatted)
+    // Display the value (already formatted), tagging the current mode when
+    // the property supports both Auto and Manual.
     print!("{}", current);
+    if let Some(ref mode) = prop.mode {
+        print!(" [{}]", mode);
+    }
 
     // Add metadata if present
     let mut meta = Vec::new();
     if let Some(ref supported) = prop.supported_values {
         meta.push(format!("Supported: {}", supported));
+    }
+    if let Some(ref modes) = prop.modes_supported
+        && modes.contains(',')
+    {
+        meta.push(format!("Modes: {} (use --value Auto or a number)", modes));
     }
     if let Some(ref default) = prop.default {
         meta.push(format!("Default: {}", default));
