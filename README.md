@@ -93,6 +93,25 @@ wincamcfg set --camera 0 --property WhiteBalance --value Auto
 wincamcfg set --camera 0 --property BacklightCompensation --value Off
 ```
 
+### Auto vs manual mode
+
+Properties like `Exposure`, `Focus`, and `WhiteBalance` can run in either Auto or Manual mode. Pass `--value Auto` to switch the property into auto mode, or pass any numeric value to switch it into manual mode at that value.
+
+```bash
+# Turn auto exposure ON
+wincamcfg set --camera 0 --property Exposure --value Auto
+
+# Turn auto exposure OFF by setting an explicit manual value
+# (use `get` to see the supported range and current value, e.g. -11..-1 on a C920)
+wincamcfg set --camera 0 --property Exposure --value -5
+
+# Same idea for autofocus
+wincamcfg set --camera 0 --property Focus --value Auto    # autofocus on
+wincamcfg set --camera 0 --property Focus --value 0       # autofocus off, fixed focus
+```
+
+The current mode is shown in square brackets by `get`, e.g. `Exposure: -5 [Manual]` or `Exposure: -6 [Auto]`. Only properties that advertise Auto support will show a mode tag.
+
 ### Reset to defaults
 
 Restore factory settings:

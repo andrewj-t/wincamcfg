@@ -19,10 +19,12 @@ cargo fmt --all                # Auto-format code
 cargo clippy -- -D warnings    # Lint with all warnings as errors (CI enforces this)
 ```
 
-Debug logging via `RUST_LOG` environment variable:
+Debug logging via `RUST_LOG` environment variable. Accepted values:
+`trace`, `debug`, `info`, `warn`, `error`, `off`. Defaults to `warn`.
+
 ```powershell
 $env:RUST_LOG="trace"; cargo run -- list
-$env:RUST_LOG="wincamcfg=trace"; cargo run -- set --camera 0 --property PowerlineFrequency --value 50Hz
+$env:RUST_LOG="debug"; cargo run -- set --camera 0 --property PowerlineFrequency --value 50Hz
 ```
 
 ## Architecture

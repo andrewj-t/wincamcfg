@@ -3,12 +3,10 @@ pub mod webcam;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
-use serde_with::skip_serializing_none;
 use tracing::{debug, info, instrument};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 
 // Output structures for JSON/text rendering
-#[skip_serializing_none]
 #[derive(Debug, serde::Serialize)]
 struct DeviceOutput<'a> {
     index: usize,
@@ -17,12 +15,18 @@ struct DeviceOutput<'a> {
 }
 
 // Property output with formatted values (value, default, and supported_values are all formatted strings)
-#[skip_serializing_none]
 #[derive(Debug, serde::Serialize)]
 struct PropertyOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     supported_values: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modes_supported: Option<String>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -88,7 +92,7 @@ enum Commands {
         property: String,
 
         /// Value to set
-        #[arg(short, long, conflicts_with = "default")]
+        #[arg(short, long, conflicts_with = "default", allow_hyphen_values = true)]
         value: Option<String>,
 
         /// Set to default value
@@ -107,11 +111,14 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize tracing with environment-based filtering
+    // Initialize tracing. RUST_LOG accepts a single level (trace/debug/info/warn/error/off).
+    let level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|s| s.parse::<LevelFilter>().ok())
+        .unwrap_or(LevelFilter::WARN);
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
+        .with_max_level(level)
         .with_target(true)
         .with_thread_ids(false)
         .with_file(true)
@@ -196,6 +203,11 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
                     value: prop
                         .current
                         .map(|v| webcam::format_property_value(&prop.name, v)),
+                    mode: prop
+                        .caps
+                        .zip(prop.current_flags)
+                        .and_then(|(caps, flags)| webcam::current_mode(caps, flags))
+                        .map(String::from),
                     default: prop
                         .default
                         .map(|v| webcam::format_property_value(&prop.name, v)),
@@ -203,6 +215,7 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
                         .min
                         .and_then(|min| prop.max.map(|max| (min, max)))
                         .and_then(|(min, max)| webcam::build_enum_display(&prop.name, min, max)),
+                    modes_supported: prop.capabilities.clone(),
                 },
             )
         })
@@ -248,13 +261,22 @@ fn display_property_value(prop: &PropertyOutput) {
         return;
     };
 
-    // Display the value (already formatted)
+    // Display the value (already formatted), tagging the current mode when
+    // the property supports both Auto and Manual.
     print!("{}", current);
+    if let Some(ref mode) = prop.mode {
+        print!(" [{}]", mode);
+    }
 
     // Add metadata if present
     let mut meta = Vec::new();
     if let Some(ref supported) = prop.supported_values {
         meta.push(format!("Supported: {}", supported));
+    }
+    if let Some(ref modes) = prop.modes_supported
+        && modes.contains(',')
+    {
+        meta.push(format!("Modes: {}", modes));
     }
     if let Some(ref default) = prop.default {
         meta.push(format!("Default: {}", default));

@@ -1,3 +1,15 @@
+## [0.3.0] - 2026-05-24
+
+### Changed
+
+- Surface Auto/Manual mode for camera properties in `get` output, with a `modes_supported` field listing available modes (#42)
+- Fix `--value` not accepting negative numbers (#43)
+- Reviewed all dependencies and look for oppertunies to reduce them and use functionality in other libraries:
+  - drop `serde_with` and `strum`, drop `tracing-subscriber` env-filter feature
+  - trim `clap` to a minimal feature set
+  - drop redundant `windows` crate features
+- Bump transitive deps to latest patches
+
 ## [0.2.15] - 2026-05-09
 
 ### Changed
