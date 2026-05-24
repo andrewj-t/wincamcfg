@@ -118,8 +118,23 @@ pub struct PropertyInfo {
     pub default: Option<i32>,
     pub caps: Option<i32>,
     pub current: Option<i32>,
+    pub current_flags: Option<i32>,
     pub capabilities: Option<String>,
     pub property_type: PropertyType,
+}
+
+/// Return the current mode ("Auto" or "Manual") for a property given its
+/// current flags value and capability bits. Returns None when the property
+/// does not advertise Auto support, since the distinction is meaningless.
+pub fn current_mode(caps: i32, flags: i32) -> Option<&'static str> {
+    if caps & VideoProcAmp_Flags_Auto.0 == 0 {
+        return None;
+    }
+    if flags & VideoProcAmp_Flags_Auto.0 != 0 {
+        Some("Auto")
+    } else {
+        Some("Manual")
+    }
 }
 
 /// Returns the static value↔label table for enum-like properties.
@@ -489,6 +504,7 @@ where
                 default: Some(default),
                 caps: Some(caps),
                 current: Some(value),
+                current_flags: Some(flags_val),
                 capabilities: format_capabilities(caps),
                 property_type,
             });
