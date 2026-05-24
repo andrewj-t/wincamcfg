@@ -90,7 +90,7 @@ enum Commands {
         property: String,
 
         /// Value to set
-        #[arg(short, long, conflicts_with = "default")]
+        #[arg(short, long, conflicts_with = "default", allow_hyphen_values = true)]
         value: Option<String>,
 
         /// Set to default value
@@ -271,7 +271,7 @@ fn display_property_value(prop: &PropertyOutput) {
     if let Some(ref modes) = prop.modes_supported
         && modes.contains(',')
     {
-        meta.push(format!("Modes: {} (use --value Auto or a number)", modes));
+        meta.push(format!("Modes: {}", modes));
     }
     if let Some(ref default) = prop.default {
         meta.push(format!("Default: {}", default));
