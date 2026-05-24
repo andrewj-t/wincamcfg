@@ -3,12 +3,10 @@ pub mod webcam;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
-use serde_with::skip_serializing_none;
 use tracing::{debug, info, instrument};
 use tracing_subscriber::EnvFilter;
 
 // Output structures for JSON/text rendering
-#[skip_serializing_none]
 #[derive(Debug, serde::Serialize)]
 struct DeviceOutput<'a> {
     index: usize,
@@ -17,11 +15,13 @@ struct DeviceOutput<'a> {
 }
 
 // Property output with formatted values (value, default, and supported_values are all formatted strings)
-#[skip_serializing_none]
 #[derive(Debug, serde::Serialize)]
 struct PropertyOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     supported_values: Option<String>,
 }
 

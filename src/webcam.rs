@@ -6,7 +6,8 @@
 /// value formatting.
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString};
+use std::fmt;
+use std::str::FromStr;
 use tracing::{debug, instrument, trace};
 use windows::{
     Win32::Foundation::*, Win32::Media::DirectShow::*,
@@ -48,7 +49,7 @@ const CLSID_VIDEO_INPUT_DEVICE_CATEGORY: GUID =
     GUID::from_u128(0x860bb310_5d01_11d0_bd3b_00a0c911ce86);
 
 /// VideoProcAmp property IDs from DirectShow (ksmedia.h)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum VideoProcAmpProperty {
     Brightness = 0,
@@ -67,6 +68,56 @@ pub enum VideoProcAmpProperty {
     PowerlineFrequency = 13,
 }
 
+impl VideoProcAmpProperty {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Brightness => "Brightness",
+            Self::Contrast => "Contrast",
+            Self::Hue => "Hue",
+            Self::Saturation => "Saturation",
+            Self::Sharpness => "Sharpness",
+            Self::Gamma => "Gamma",
+            Self::ColorEnable => "ColorEnable",
+            Self::WhiteBalance => "WhiteBalance",
+            Self::BacklightCompensation => "BacklightCompensation",
+            Self::Gain => "Gain",
+            Self::DigitalMultiplier => "DigitalMultiplier",
+            Self::DigitalMultiplierLimit => "DigitalMultiplierLimit",
+            Self::WhiteBalanceComponent => "WhiteBalanceComponent",
+            Self::PowerlineFrequency => "PowerlineFrequency",
+        }
+    }
+}
+
+impl fmt::Display for VideoProcAmpProperty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for VideoProcAmpProperty {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "Brightness" => Self::Brightness,
+            "Contrast" => Self::Contrast,
+            "Hue" => Self::Hue,
+            "Saturation" => Self::Saturation,
+            "Sharpness" => Self::Sharpness,
+            "Gamma" => Self::Gamma,
+            "ColorEnable" => Self::ColorEnable,
+            "WhiteBalance" => Self::WhiteBalance,
+            "BacklightCompensation" => Self::BacklightCompensation,
+            "Gain" => Self::Gain,
+            "DigitalMultiplier" => Self::DigitalMultiplier,
+            "DigitalMultiplierLimit" => Self::DigitalMultiplierLimit,
+            "WhiteBalanceComponent" => Self::WhiteBalanceComponent,
+            "PowerlineFrequency" => Self::PowerlineFrequency,
+            _ => return Err(()),
+        })
+    }
+}
+
 impl From<VideoProcAmpProperty> for i32 {
     fn from(property: VideoProcAmpProperty) -> Self {
         property as i32
@@ -74,7 +125,7 @@ impl From<VideoProcAmpProperty> for i32 {
 }
 
 /// CameraControl property IDs from DirectShow (ksmedia.h)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum CameraControlProperty {
     Pan = 0,
@@ -86,6 +137,42 @@ pub enum CameraControlProperty {
     Focus = 6,
 }
 
+impl CameraControlProperty {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pan => "Pan",
+            Self::Tilt => "Tilt",
+            Self::Roll => "Roll",
+            Self::Zoom => "Zoom",
+            Self::Exposure => "Exposure",
+            Self::Iris => "Iris",
+            Self::Focus => "Focus",
+        }
+    }
+}
+
+impl fmt::Display for CameraControlProperty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CameraControlProperty {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "Pan" => Self::Pan,
+            "Tilt" => Self::Tilt,
+            "Roll" => Self::Roll,
+            "Zoom" => Self::Zoom,
+            "Exposure" => Self::Exposure,
+            "Iris" => Self::Iris,
+            "Focus" => Self::Focus,
+            _ => return Err(()),
+        })
+    }
+}
+
 impl From<CameraControlProperty> for i32 {
     fn from(property: CameraControlProperty) -> Self {
         property as i32
@@ -93,10 +180,19 @@ impl From<CameraControlProperty> for i32 {
 }
 
 /// Property type enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PropertyType {
     VideoProcAmp,
     CameraControl,
+}
+
+impl fmt::Display for PropertyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::VideoProcAmp => "VideoProcAmp",
+            Self::CameraControl => "CameraControl",
+        })
+    }
 }
 
 /// Device information including metadata and all available properties
