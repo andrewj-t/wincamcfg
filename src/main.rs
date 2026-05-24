@@ -3,12 +3,10 @@ pub mod webcam;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use indexmap::IndexMap;
-use serde_with::skip_serializing_none;
 use tracing::{debug, info, instrument};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 
 // Output structures for JSON/text rendering
-#[skip_serializing_none]
 #[derive(Debug, serde::Serialize)]
 struct DeviceOutput<'a> {
     index: usize,
@@ -17,13 +15,17 @@ struct DeviceOutput<'a> {
 }
 
 // Property output with formatted values (value, default, and supported_values are all formatted strings)
-#[skip_serializing_none]
 #[derive(Debug, serde::Serialize)]
 struct PropertyOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     supported_values: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     modes_supported: Option<String>,
 }
 
@@ -109,11 +111,14 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize tracing with environment-based filtering
+    // Initialize tracing. RUST_LOG accepts a single level (trace/debug/info/warn/error/off).
+    let level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|s| s.parse::<LevelFilter>().ok())
+        .unwrap_or(LevelFilter::WARN);
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
+        .with_max_level(level)
         .with_target(true)
         .with_thread_ids(false)
         .with_file(true)

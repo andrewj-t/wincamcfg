@@ -9,21 +9,17 @@ homepage = "https://github.com/andrewj-t/wincamcfg/"
 
 [dependencies]
 anyhow = "1.0"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 indexmap = { version = "2.14", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
-serde_with = "3.19"
-strum = { version = "0.28", features = ["derive"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = "0.3"
 windows = { version = ">=0.59, <=0.62", features = [
-    "Win32_Foundation",
-    "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_Media_DirectShow",
     "Win32_System_Variant",
-    "Win32_System_Ole"
+    "Win32_System_Ole",
 ] }
 
 [build-dependencies]
