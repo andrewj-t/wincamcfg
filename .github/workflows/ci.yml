@@ -79,6 +79,41 @@ jobs:
         name: wincamcfg-windows
         path: target/release/wincamcfg.exe
 
+  # Warns (never fails) when semver-compatible dependency updates are available,
+  # so the manual "cargo update alongside other changes" policy doesn't get missed.
+  outdated-deps:
+    name: Check for Outdated Dependencies
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check lockfile freshness
+      shell: bash
+      run: |
+        UPDATES=$(cargo update --dry-run 2>&1 | grep ' -> ' || true)
+        if [ -n "$UPDATES" ]; then
+          COUNT=$(echo "$UPDATES" | wc -l)
+          echo "::warning title=Outdated dependencies ($COUNT)::Semver-compatible updates are available. Run 'cargo update' and include Cargo.lock in this PR."
+          {
+            echo "### :warning: Outdated dependencies"
+            echo ""
+            echo "Run \`cargo update\` and include the refreshed \`Cargo.lock\` in this PR."
+            echo ""
+            echo '```'
+            echo "$UPDATES"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "Lockfile is up to date."
+          echo ":white_check_mark: Lockfile is up to date." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
   # Runs only after lint/build/test pass — no point scanning code that doesn't compile.
   # Requires CodeQL "default setup" to be DISABLED in the repo's code scanning settings,
   # otherwise the analysis upload is rejected.
