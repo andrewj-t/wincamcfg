@@ -213,7 +213,7 @@ fn build_device_output<'a>(idx: usize, device: &'a webcam::DeviceInfo) -> Device
                         .map(|v| webcam::format_property_value(&prop.name, v)),
                     supported_values: prop
                         .min
-                        .and_then(|min| prop.max.map(|max| (min, max)))
+                        .zip(prop.max)
                         .and_then(|(min, max)| webcam::build_enum_display(&prop.name, min, max)),
                     modes_supported: prop.capabilities.clone(),
                 },
