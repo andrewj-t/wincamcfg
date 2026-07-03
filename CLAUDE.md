@@ -48,10 +48,16 @@ Embeds a Windows application manifest (amd64, asInvoker, Windows 10/11 compatibi
 
 ## CI/CD
 
-- **ci.yml** — Runs on PRs/pushes to main/develop: fmt check, clippy, build, test, uploads artifact.
-- **release.yml** — Triggered on push to main: version check, changelog update, git tag, SBOM generation (SPDX + CycloneDX), build attestations, GitHub release.
-- **auto-patch-bump.yml** — Auto-bumps patch version on Dependabot PRs and adds changelog entry.
+- **ci.yml** — Runs on PRs/pushes to main/develop: fmt check, clippy, build, test, artifact upload; a CodeQL job (rust + actions) runs only after build/test pass.
+- **release.yml** — Triggered via `workflow_run` after CI succeeds on main: skips quietly if the version's tag already exists, otherwise builds the release binary, tags the CI-validated commit, generates SBOMs (SPDX + CycloneDX), attests, and creates the GitHub release. It does NOT push to main (branch protection rejects workflow pushes).
+- **auto-patch-bump.yml** — Auto-bumps patch version on Dependabot cargo PRs and adds changelog entry.
+
+Branch protection on `main` (ruleset "Protect main") requires the "Build and Test" check; admins can bypass deliberately via the UI.
+
+## Dependency Policy
+
+Dependabot is limited to security updates only (`open-pull-requests-limit: 0` in `.github/dependabot.yml`). Routine freshness is manual: when making changes to the repo for any other reason, also run `cargo update` and include the refreshed `Cargo.lock` in the same PR.
 
 ## Release Process
 
-Version is in `Cargo.toml`. Pushing to `main` with a new version triggers the full release pipeline (tag, SBOM, attestation, GitHub release). The version must differ from the last release tag.
+Version is in `Cargo.toml`. Merging to `main` with a new version triggers the release pipeline automatically once CI passes. The version must not already have a release tag, and CHANGELOG.md must be updated in the same PR that bumps the version (the pipeline no longer writes the changelog).

@@ -4,24 +4,27 @@
 # https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
 
 version: 2
+# Version updates are disabled (open-pull-requests-limit: 0) — Dependabot only
+# raises PRs for security advisories. Routine dependency freshness is handled
+# manually: run `cargo update` when making other changes anyway.
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "monthly"
+    open-pull-requests-limit: 0
     groups:
       security-updates:
         applies-to: security-updates
-        patterns:
-          - "*"
-      rust-deps:
         patterns:
           - "*"
   - package-ecosystem: github-actions
     directory: "/.github/workflows"
     schedule:
       interval: "monthly"
+    open-pull-requests-limit: 0
     groups:
-      gha-deps:
+      security-updates:
+        applies-to: security-updates
         patterns:
           - "*"

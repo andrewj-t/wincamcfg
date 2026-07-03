@@ -1,4 +1,5 @@
 name: CI
+
 permissions:
   contents: read
 
@@ -9,7 +10,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/**'
   push:
     branches:
       - main
@@ -19,6 +20,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
+      - '.github/workflows/**'
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,52 +29,119 @@ env:
 # and restart the workflow. See https://docs.github.com/en/actions/using-jobs/using-concurrency
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true  
+  cancel-in-progress: true
 
 jobs:
   build:
     name: Build and Test
     runs-on: windows-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v7
-    
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
-    
+
     - name: Cache cargo registry
       uses: actions/cache@v6
       with:
         path: ~/.cargo/registry
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-    
+
     - name: Cache cargo index
       uses: actions/cache@v6
       with:
         path: ~/.cargo/git
         key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-    
+
     - name: Cache cargo build
       uses: actions/cache@v6
       with:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-    
+
     - name: Check formatting
       run: cargo fmt --all -- --check
-    
+
     - name: Run clippy
       run: cargo clippy -- -D warnings
-    
+
     - name: Build
       run: cargo build --release --verbose
-    
+
     - name: Run tests
       run: cargo test --verbose
-    
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v7
       with:
         name: wincamcfg-windows
         path: target/release/wincamcfg.exe
+
+  # Warns (never fails) when semver-compatible dependency updates are available,
+  # so the manual "cargo update alongside other changes" policy doesn't get missed.
+  outdated-deps:
+    name: Check for Outdated Dependencies
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check lockfile freshness
+      shell: bash
+      run: |
+        UPDATES=$(cargo update --dry-run 2>&1 | grep ' -> ' || true)
+        if [ -n "$UPDATES" ]; then
+          COUNT=$(echo "$UPDATES" | wc -l)
+          echo "::warning title=Outdated dependencies ($COUNT)::Semver-compatible updates are available. Run 'cargo update' and include Cargo.lock in this PR."
+          {
+            echo "### :warning: Outdated dependencies"
+            echo ""
+            echo "Run \`cargo update\` and include the refreshed \`Cargo.lock\` in this PR."
+            echo ""
+            echo '```'
+            echo "$UPDATES"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "Lockfile is up to date."
+          echo ":white_check_mark: Lockfile is up to date." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+  # Runs only after lint/build/test pass — no point scanning code that doesn't compile.
+  # Requires CodeQL "default setup" to be DISABLED in the repo's code scanning settings,
+  # otherwise the analysis upload is rejected.
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, actions]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v4
+      with:
+        languages: ${{ matrix.language }}
+        build-mode: none
+
+    - name: Analyze
+      uses: github/codeql-action/analyze@v4
+      with:
+        category: '/language:${{ matrix.language }}'

@@ -1,3 +1,9 @@
+## [0.3.2] - 2026-07-03
+
+### Changed
+- Fix clippy `manual` `Option::zip` lint that failed CI on newer stable toolchains
+- CI/CD overhaul: CodeQL now runs as a gated job after build/test, the release pipeline triggers on CI success instead of racing it, the automatic Claude Code review workflow was removed, and CHANGELOG updates move into version-bump PRs (branch protection on `main` now requires CI to pass)
+
 ## [0.3.1] - 2026-07-01
 
 ### Changed
