@@ -65,7 +65,9 @@ Properties that are missing from the output are not supported by your camera. A 
 
 After every write, `wincamcfg` closes the camera, reopens it and reads the property back. Some cameras keep a written value only while an application has them open and revert it as soon as the last handle closes; the Logitech C920 does this for PowerlineFrequency. The write is not lost, though: the Windows UVC class driver (`usbvideo.sys`) records the powerline frequency under the device's `Device Parameters` registry key and applies it the next time the device starts.
 
-When `set` sees that the device reverted but the driver has stored the new value, it reports success with this note and exits 0. The setting takes effect after the camera is reconnected, the device is restarted (`pnputil /restart-device <instance-id>` from an elevated prompt), or the machine reboots. Until then the new value is active only while an application holds the camera open. The driver's own property dialog behaves exactly the same way; it just keeps the camera open while you look at it.
+When `set` sees that the device reverted but the driver has stored the new value, it reports success with this note and exits 0. The setting takes effect after the camera is reconnected, the device is restarted, or the machine reboots. Until then the new value is active only while an application holds the camera open. The driver's own property dialog behaves exactly the same way; it just keeps the camera open while you look at it.
+
+To apply it immediately, run `set` from an elevated prompt with `--restart-device`. The tool then restarts the camera (the same operation as `pnputil /restart-device <instance-id>`), waits for it to come back, reads the value again and reports `applied after restarting the device`. Without administrator rights the flag is refused up front with exit code 1.
 
 ### "the driver accepted the write but the device now reports ..."
 

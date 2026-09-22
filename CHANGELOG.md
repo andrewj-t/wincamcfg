@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `wincamcfg --version` flag (the `version` subcommand remains).
+- `set --restart-device` (elevated prompt only) restarts the camera when the driver merely stored a value for the next device start, so the setting takes effect immediately; results then read `applied after restarting the device`.
 - `wincamcfg dialog --camera N` opens the driver's own property dialog (the pages OBS Studio shows under *Configure Video*) for visual confirmation of what `get` reports.
 - `get` shows `Range: min..max` (and the step when it is not 1) for numeric properties and adds `min`, `max` and `step` to the JSON output.
 - Every write is read back through a fresh device handle. A value the camera drops when the handle closes (the Logitech C920 does this for PowerlineFrequency) is reported as "stored by the driver and applied when the camera next starts" when the Windows UVC driver has recorded it, and as a failure with the value the device actually holds otherwise, instead of a false success. `set` results gain an optional `note` field.

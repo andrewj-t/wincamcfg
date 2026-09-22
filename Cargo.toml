@@ -29,11 +29,14 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # for `windows::core::Error` to implement `std::error::Error` (anyhow interop).
 # `Win32_System_Ole` is required because it gates the `VARIANT` type.
 windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Ole",
     "Win32_System_Registry",
+    "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_Media_DirectShow",
 ] }

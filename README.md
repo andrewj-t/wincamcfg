@@ -114,6 +114,14 @@ The current mode is shown in square brackets by `get`, e.g. `Exposure: -5 [Manua
 
 Every write is read back through a fresh handle. Some cameras (the Logitech C920, for one) keep the powerline frequency only while an application has them open; Windows' UVC driver still stores the value and applies it the next time the camera starts, and `set` tells you so: `set to 60Hz (stored by the driver and applied when the camera next starts ...)`. If a camera drops a write and nothing stores it, the command reports the value the device actually holds and exits with code 2. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
+From an elevated prompt (which is how startup scripts and GPO usually run), add `--restart-device` to have `set` restart the camera when a value was only stored, so it takes effect immediately:
+
+```powershell
+wincamcfg set --camera 0 --property PowerlineFrequency --value 50Hz --restart-device
+```
+
+The restart takes a second or two and interrupts any application currently using that camera, which is why it is opt-in. Cameras that apply the value straight away are never restarted.
+
 ### Reset to defaults
 
 Restore factory settings. Properties that support Auto go back to Auto, as the Default button in the Windows dialog does:

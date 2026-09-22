@@ -39,14 +39,21 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
 
+use std::time::{Duration, Instant};
+
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use tracing::{debug, instrument, trace};
-use windows::Win32::Foundation::{HWND, S_OK};
+use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    CM_Disable_DevNode, CM_Enable_DevNode, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CONFIGRET,
+    CR_ACCESS_DENIED, CR_SUCCESS,
+};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, S_OK};
 use windows::Win32::Media::DirectShow::{
     CameraControl_Flags_Auto, CameraControl_Flags_Manual, IAMCameraControl, IAMVideoProcAmp,
     IBaseFilter, ICreateDevEnum, VideoProcAmp_Flags_Auto, VideoProcAmp_Flags_Manual,
 };
+use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
@@ -54,6 +61,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Ole::{ISpecifyPropertyPages, OleCreatePropertyFrame};
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW};
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VariantClear};
 use windows::core::{GUID, HSTRING, IUnknown, Interface};
 
@@ -660,6 +668,112 @@ impl Device<'_> {
         let instance = device_instance_id(self.info.device_path.as_deref()?)?;
         read_device_parameter_dword(&instance, "PowerlineFrequency")
     }
+
+    /// Restarts the device (disable, then enable) so stored values take effect.
+    ///
+    /// This is what `pnputil /restart-device` does. The camera disappears for
+    /// a moment and any application using it loses the stream.
+    ///
+    /// # Errors
+    /// Fails without administrator rights (`CR_ACCESS_DENIED`), when the
+    /// device has no usable device path, or when Configuration Manager
+    /// rejects the operation.
+    #[instrument(skip(self), fields(device = %self.info.display_name()))]
+    pub(crate) fn restart(&self) -> Result<()> {
+        let path = self
+            .info
+            .device_path
+            .as_deref()
+            .context("Device path not available; cannot restart the device")?;
+        let instance = device_instance_id(path)
+            .context("Could not derive a device instance id from the device path")?;
+        let instance_w = HSTRING::from(instance.as_str());
+
+        let mut devinst = 0u32;
+        // SAFETY: `devinst` is a valid out-slot and `instance_w` a
+        // NUL-terminated wide string; both outlive the call.
+        let cr =
+            unsafe { CM_Locate_DevNodeW(&raw mut devinst, &instance_w, CM_LOCATE_DEVNODE_NORMAL) };
+        check_configret(cr, "locate the device")?;
+
+        debug!(instance, devinst, "Restarting device");
+        // SAFETY: plain call taking the device instance handle located above.
+        let disabled = unsafe { CM_Disable_DevNode(devinst, 0) };
+        check_configret(disabled, "disable the device")?;
+        // SAFETY: as above.
+        let enabled = unsafe { CM_Enable_DevNode(devinst, 0) };
+        check_configret(enabled, "enable the device")?;
+        Ok(())
+    }
+
+    /// [`Device::read_back`], retried until the device answers or `timeout` passes.
+    ///
+    /// After a restart the device takes a moment to re-enumerate; binding fails
+    /// until then.
+    ///
+    /// # Errors
+    /// Returns the last bind error once the timeout has elapsed.
+    pub(crate) fn read_back_when_ready(
+        &self,
+        properties: &[&str],
+        timeout: Duration,
+    ) -> Result<Vec<Option<CurrentValue>>> {
+        let start = Instant::now();
+        loop {
+            match self.read_back(properties) {
+                Ok(readings) => return Ok(readings),
+                Err(error) if start.elapsed() < timeout => {
+                    trace!(%error, "Device not ready yet; retrying");
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(error) => {
+                    return Err(error.context("Device did not come back after the restart"));
+                }
+            }
+        }
+    }
+}
+
+/// Maps a Configuration Manager status to an error with a readable reason.
+fn check_configret(cr: CONFIGRET, what: &str) -> Result<()> {
+    if cr == CR_SUCCESS {
+        Ok(())
+    } else if cr == CR_ACCESS_DENIED {
+        bail!("Failed to {what}: access denied (this needs an elevated prompt)")
+    } else {
+        bail!("Failed to {what} (CONFIGRET {})", cr.0)
+    }
+}
+
+/// Whether this process runs with administrator rights (an elevated token).
+#[must_use]
+pub(crate) fn is_elevated() -> bool {
+    let mut token = HANDLE::default();
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no
+    // closing; `token` is a valid out-slot for the call's duration.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }.is_err() {
+        return false;
+    }
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned = 0u32;
+    let Ok(len) = u32::try_from(size_of::<TOKEN_ELEVATION>()) else {
+        return false;
+    };
+    // SAFETY: `token` is an open token handle; `elevation` is a valid
+    // TOKEN_ELEVATION buffer whose exact size is passed; `returned` is a valid
+    // out-slot. All outlive the call.
+    let queried = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some((&raw mut elevation).cast()),
+            len,
+            &raw mut returned,
+        )
+    };
+    // SAFETY: closes the handle opened above, exactly once.
+    let _ = unsafe { CloseHandle(token) };
+    queried.is_ok() && elevation.TokenIsElevated != 0
 }
 
 /// Converts a DirectShow device path into a PnP device instance id.

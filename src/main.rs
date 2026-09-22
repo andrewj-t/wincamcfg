@@ -21,6 +21,7 @@ mod webcam;
 use std::fmt::Write as _;
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
@@ -99,6 +100,12 @@ enum Commands {
         /// Set to the device's default value
         #[arg(short, long, group = "target")]
         default: bool,
+
+        /// If the driver only stored a value for the next device start, restart the
+        /// camera now so it takes effect (needs an elevated prompt; interrupts
+        /// applications using the camera)
+        #[arg(long)]
+        restart_device: bool,
 
         /// Output format
         #[arg(short, long, value_enum, default_value_t = OutputFormat::Text)]
@@ -250,6 +257,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<Outcome> {
             camera,
             property,
             value,
+            restart_device,
             output,
             ..
         } => {
@@ -258,7 +266,12 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<Outcome> {
             if property.eq_ignore_ascii_case("all") && target != SetValue::Default {
                 bail!("Property 'all' can only be used with --default");
             }
-            return set_property(&camera, &property, &target, output, out);
+            if restart_device && !webcam::is_elevated() {
+                bail!(
+                    "--restart-device needs administrator rights; run this from an elevated prompt"
+                );
+            }
+            return set_property(&camera, &property, &target, restart_device, output, out);
         }
     }
 
@@ -349,10 +362,18 @@ fn set_property(
     camera: &str,
     property: &str,
     target: &SetValue,
+    restart_device: bool,
     output: OutputFormat,
     out: &mut dyn Write,
 ) -> Result<Outcome> {
-    debug!(camera, property, ?target, ?output, "Setting property");
+    debug!(
+        camera,
+        property,
+        ?target,
+        restart_device,
+        ?output,
+        "Setting property"
+    );
 
     let com = ComSession::new()?;
     let devices = webcam::open_devices(&com).context("Failed to enumerate devices")?;
@@ -409,7 +430,7 @@ fn set_property(
             },
         };
 
-        let entries = apply_jobs(device, idx, &jobs);
+        let entries = apply_jobs(device, idx, &jobs, restart_device)?;
 
         if output == OutputFormat::Text {
             for r in &entries {
@@ -446,14 +467,23 @@ fn set_property(
     })
 }
 
+/// How long to wait for a restarted camera to re-enumerate before giving up.
+const DEVICE_RESTART_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Writes each job on one device, then reads every accepted write back through
 /// a fresh handle. Some drivers keep a value only while an application has the
-/// camera open; such a write is reported as a failure, not a success.
+/// camera open; such a write is reported as a failure, not a success, unless
+/// the driver stored it for the next device start. With `restart_device`, a
+/// stored-but-pending write triggers a device restart so it takes effect now.
+///
+/// # Errors
+/// Fails only when a requested device restart cannot be performed.
 fn apply_jobs(
     device: &webcam::Device<'_>,
     idx: usize,
     jobs: &[(&str, ParsedValue)],
-) -> Vec<SetResult> {
+    restart_device: bool,
+) -> Result<Vec<SetResult>> {
     let device_name = device.info().display_name();
     let mut entries: Vec<SetResult> = Vec::with_capacity(jobs.len());
     let mut accepted: Vec<(usize, &str, Written)> = Vec::new();
@@ -490,7 +520,7 @@ fn apply_jobs(
     }
 
     if accepted.is_empty() {
-        return entries;
+        return Ok(entries);
     }
     let names: Vec<&str> = accepted.iter().map(|(_, name, _)| *name).collect();
     match device.read_back(&names) {
@@ -539,7 +569,59 @@ fn apply_jobs(
             debug!(device_index = idx, device_name, %error, "Could not read values back");
         }
     }
-    entries
+
+    if restart_device {
+        restart_and_recheck(device, idx, &accepted, &mut entries)?;
+    }
+    Ok(entries)
+}
+
+/// Restarts the device if any write was only stored, then re-reads those writes.
+///
+/// # Errors
+/// Fails when the restart cannot be performed or the device does not return.
+fn restart_and_recheck(
+    device: &webcam::Device<'_>,
+    idx: usize,
+    accepted: &[(usize, &str, Written)],
+    entries: &mut [SetResult],
+) -> Result<()> {
+    let device_name = device.info().display_name();
+    let pending: Vec<(usize, &str, Written)> = accepted
+        .iter()
+        .filter(|(entry, _, _)| entries[*entry].note.is_some())
+        .copied()
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    info!(
+        device_index = idx,
+        device_name, "Restarting device to apply stored values"
+    );
+    device.restart()?;
+    let names: Vec<&str> = pending.iter().map(|(_, name, _)| *name).collect();
+    let readings = device.read_back_when_ready(&names, DEVICE_RESTART_TIMEOUT)?;
+    for ((entry, name, written), reading) in pending.iter().zip(readings) {
+        let e = &mut entries[*entry];
+        match reading {
+            Some(current) if written.persisted_in(current) => {
+                e.note = Some("applied after restarting the device".to_owned());
+            }
+            Some(current) => {
+                e.success = false;
+                e.note = None;
+                e.error = Some(format!(
+                    "the device was restarted but still reports {}",
+                    display_current(name, current)
+                ));
+            }
+            None => {
+                e.note = Some("device restarted; the value could not be read back".to_owned());
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +850,46 @@ mod tests {
             Commands::Set {
                 default: true,
                 value: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn restart_device_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "wincamcfg",
+            "set",
+            "-c",
+            "0",
+            "-p",
+            "PowerlineFrequency",
+            "--value",
+            "50Hz",
+            "--restart-device",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Set {
+                restart_device: true,
+                ..
+            }
+        ));
+        let cli = Cli::try_parse_from([
+            "wincamcfg",
+            "set",
+            "-c",
+            "0",
+            "-p",
+            "Brightness",
+            "--default",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Set {
+                restart_device: false,
                 ..
             }
         ));
