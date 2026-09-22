@@ -257,6 +257,7 @@ impl Device<'_> {
             };
             let property = jobs[i].0.property;
             let written = report.written;
+            trace!(%property, ?written, ?reading, restarted, "Read back");
             report.restarted = restarted;
             report.persistence = match reading {
                 None => Persistence::Unverified,
