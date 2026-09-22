@@ -4,79 +4,88 @@ on:
   pull_request:
     types: [opened]
 
+# Only pushes a commit to the PR branch; no pull-request API access is needed.
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   bump-version:
     runs-on: ubuntu-latest
-    # Only run on Dependabot PRs for Cargo. The branch ref is the reliable
-    # ecosystem signal — PR titles for grouped updates use the group name
-    # (e.g. "gha-deps") and don't contain the ecosystem string.
+    # Only run on Dependabot PRs for Cargo (security updates, per dependabot.yml).
+    # The branch ref is the reliable ecosystem signal: PR titles for grouped
+    # updates use the group name (e.g. "gha-deps") and do not contain the
+    # ecosystem string. GitHub Actions pin refreshes are deliberately excluded
+    # so they never trigger a release.
     if: |
       github.actor == 'dependabot[bot]' &&
       startsWith(github.head_ref, 'dependabot/cargo/')
-    
+
     steps:
       - name: Checkout PR branch
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.head_ref }}
-      
+
       - name: Get current version
         id: version
         shell: bash
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -n 1 | sed 's/version = "\(.*\)"/\1/')
-          echo "CURRENT_VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "CURRENT_VERSION=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Current version: $VERSION"
-      
+
       - name: Bump patch version
         id: bump
         shell: bash
+        env:
+          CURRENT: ${{ steps.version.outputs.CURRENT_VERSION }}
         run: |
-          CURRENT="${{ steps.version.outputs.CURRENT_VERSION }}"
-          # Parse version
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
           PATCH=$((PATCH + 1))
           NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "Bumping version from $CURRENT to $NEW_VERSION"
-      
+
       - name: Update Cargo.toml
         shell: bash
+        env:
+          OLD_VERSION: ${{ steps.version.outputs.CURRENT_VERSION }}
+          NEW_VERSION: ${{ steps.bump.outputs.NEW_VERSION }}
         run: |
-          OLD_VERSION="${{ steps.version.outputs.CURRENT_VERSION }}"
-          NEW_VERSION="${{ steps.bump.outputs.NEW_VERSION }}"
-          sed -i "0,/version = \"$OLD_VERSION\"/s//version = \"$NEW_VERSION\"/" Cargo.toml
-          cat Cargo.toml | grep "^version"
-      
+          sed -i "0,/^version = \"$OLD_VERSION\"/s//version = \"$NEW_VERSION\"/" Cargo.toml
+          grep "^version" Cargo.toml
+
+      # Inserts the entry above the newest release heading, keeping the
+      # "# Changelog" header and preamble at the top of the file.
       - name: Update CHANGELOG.md
         shell: bash
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.NEW_VERSION }}
         run: |
-          NEW_VERSION="${{ steps.bump.outputs.NEW_VERSION }}"
           DATE=$(date +%Y-%m-%d)
-          
-          # Create new changelog entry
-          {
-            echo "## [$NEW_VERSION] - $DATE"
-            echo ""
-            echo "### Changed"
-            echo "- Automated dependency updates"
-            echo ""
-            cat CHANGELOG.md
-          } > CHANGELOG.tmp
+          awk -v ver="$NEW_VERSION" -v date="$DATE" '
+            !done && /^## \[/ {
+              print "## [" ver "] - " date
+              print ""
+              print "### Changed"
+              print "- Automated dependency updates"
+              print ""
+              done = 1
+            }
+            { print }
+          ' CHANGELOG.md > CHANGELOG.tmp
           mv CHANGELOG.tmp CHANGELOG.md
-      
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      
+
       - name: Commit version bump to PR
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.NEW_VERSION }}
         run: |
           git add Cargo.toml CHANGELOG.md
-          git commit -m "chore: bump version to ${{ steps.bump.outputs.NEW_VERSION }}" || echo "No changes to commit"
+          git commit -m "chore: bump version to ${NEW_VERSION}" || echo "No changes to commit"
           git push

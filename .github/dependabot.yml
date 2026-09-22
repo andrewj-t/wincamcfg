@@ -1,12 +1,14 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
-
+# Dependabot policy
+#
+# - cargo: security advisories only (open-pull-requests-limit: 0 disables
+#   version updates). Routine freshness is manual: run `cargo update` when
+#   making other changes anyway. Security PRs get an automatic patch bump
+#   (auto-patch-bump.yml) and therefore produce a release when merged.
+# - github-actions: version updates ARE enabled so the commit-SHA pins in
+#   .github/workflows stay current. These PRs do not bump the crate version,
+#   and release.yml skips when the version tag already exists, so merging
+#   them never produces a release.
 version: 2
-# Version updates are disabled (open-pull-requests-limit: 0) — Dependabot only
-# raises PRs for security advisories. Routine dependency freshness is handled
-# manually: run `cargo update` when making other changes anyway.
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
@@ -18,13 +20,12 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
-  - package-ecosystem: github-actions
-    directory: "/.github/workflows"
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 5
     groups:
-      security-updates:
-        applies-to: security-updates
+      actions:
         patterns:
           - "*"

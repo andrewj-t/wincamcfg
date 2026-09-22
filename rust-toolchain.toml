@@ -1,0 +1,7 @@
+# Pins the exact compiler used by CI, releases and local builds so a new
+# stable release (with new clippy lints or rustfmt defaults) cannot turn a
+# green PR red without a code change. Bump deliberately, in its own PR.
+# The MSRV (rust-version in Cargo.toml) is checked separately in CI.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

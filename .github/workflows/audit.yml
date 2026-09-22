@@ -1,0 +1,52 @@
+name: Security Audit
+
+# Scans Cargo.lock against the RustSec advisory database. The weekly schedule
+# catches advisories published against dependencies that have not changed,
+# which PR-time checks alone would miss.
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.github/workflows/audit.yml'
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so the auditing tool itself is not a floating dependency.
+  CARGO_AUDIT_VERSION: 0.22.2
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install Rust toolchain
+      run: rustup toolchain install
+
+    - name: Cache cargo-audit binary
+      id: cache-audit
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/cargo-audit
+        key: cargo-audit-${{ env.CARGO_AUDIT_VERSION }}-${{ runner.os }}
+
+    - name: Install cargo-audit
+      if: steps.cache-audit.outputs.cache-hit != 'true'
+      run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+
+    - name: Audit dependencies
+      run: cargo audit --deny warnings

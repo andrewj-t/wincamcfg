@@ -1,9 +1,8 @@
 name: Release
 
+# Least privilege: only the publish job gets write and OIDC permissions.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 # Serialize releases; never cancel one in flight.
 concurrency:
@@ -11,7 +10,8 @@ concurrency:
   cancel-in-progress: false
 
 # Runs after CI succeeds on main, so a broken build never starts the release
-# machinery. Skips quietly when the current version has already been released.
+# machinery. Skips quietly when the current version has already been released,
+# which is also why merging a dependency-pin refresh never produces a release.
 on:
   workflow_run:
     workflows: [CI]
@@ -20,6 +20,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned so the SBOM generator is not a floating dependency inside the
+  # job that holds attestation permissions.
+  CARGO_SBOM_VERSION: 0.10.0
 
 jobs:
   prepare:
@@ -32,10 +35,11 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ github.event.workflow_run.head_sha }}
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Get version from Cargo.toml
       id: version
@@ -48,8 +52,10 @@ jobs:
     - name: Decide whether to release
       id: decide
       shell: bash
+      env:
+        VERSION: ${{ steps.version.outputs.VERSION }}
       run: |
-        TAG="v${{ steps.version.outputs.VERSION }}"
+        TAG="v${VERSION}"
         if [ -n "$(git tag -l "$TAG")" ]; then
           echo "RELEASE_NEEDED=false" >> "$GITHUB_OUTPUT"
           echo ":fast_forward: Tag $TAG already exists — nothing to release." >> "$GITHUB_STEP_SUMMARY"
@@ -66,36 +72,32 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ github.event.workflow_run.head_sha }}
+        persist-credentials: false
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Install Rust toolchain
+      run: |
+        rustup toolchain install
+        rustup show active-toolchain
 
+    # Only the registry is cached. The build directory is deliberately not
+    # restored: the released, attested binary must come from a clean build,
+    # not from a cache that pull-request jobs can write to.
     - name: Cache cargo registry
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ~/.cargo/registry
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Cache cargo index
-      uses: actions/cache@v6
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo build
-      uses: actions/cache@v6
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
     - name: Build release binary
-      run: cargo build --release
+      run: cargo build --release --locked
 
     - name: Upload binary artifact
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: release-binary
         path: target/release/wincamcfg.exe
@@ -103,13 +105,19 @@ jobs:
   publish:
     name: Tag, SBOM, and Release
     needs: [prepare, build]
+    if: needs.prepare.outputs.release_needed == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
 
     steps:
     # CHANGELOG.md is maintained in the PR that bumps the version (branch
     # protection on main rejects direct pushes from the workflow token).
+    # Credentials are kept on this checkout because it pushes the tag.
     - name: Checkout code
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ github.event.workflow_run.head_sha }}
 
@@ -119,21 +127,25 @@ jobs:
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
     - name: Create and push git tag
+      env:
+        VERSION: ${{ needs.prepare.outputs.version }}
       run: |
-        git tag -a v${{ needs.prepare.outputs.version }} -m "Release v${{ needs.prepare.outputs.version }}"
-        git push origin v${{ needs.prepare.outputs.version }}
+        git tag -a "v${VERSION}" -m "Release v${VERSION}"
+        git push origin "v${VERSION}"
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Install Rust toolchain
+      run: rustup toolchain install
 
     - name: Cache cargo registry
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ~/.cargo/registry
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
         key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Install cargo-sbom
-      run: cargo install cargo-sbom --locked
+      run: cargo install cargo-sbom --version "$CARGO_SBOM_VERSION" --locked
 
     - name: Generate SBOM (SPDX)
       run: cargo sbom --output-format spdx_json_2_3 > sbom.spdx.json
@@ -142,29 +154,29 @@ jobs:
       run: cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cyclonedx.json
 
     - name: Download binary artifact
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: release-binary
 
     - name: Generate artifact attestation
-      uses: actions/attest-build-provenance@v4
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
       with:
         subject-path: 'wincamcfg.exe'
 
     - name: Generate SPDX SBOM attestation
-      uses: actions/attest-sbom@v4
+      uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
       with:
         subject-path: 'wincamcfg.exe'
         sbom-path: 'sbom.spdx.json'
 
     - name: Generate CycloneDX SBOM attestation
-      uses: actions/attest-sbom@v4
+      uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
       with:
         subject-path: 'wincamcfg.exe'
         sbom-path: 'sbom.cyclonedx.json'
 
     - name: Create Release
-      uses: softprops/action-gh-release@v3
+      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
       with:
         tag_name: v${{ needs.prepare.outputs.version }}
         draft: false
