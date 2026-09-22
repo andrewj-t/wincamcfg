@@ -54,6 +54,8 @@ Options:
   -h, --help             Print help
 ```
 
+Text output shows the DirectShow device path under the device name and the JSON carries it as `device_path`, for every device that reports one.
+
 ### `set`
 
 ```text
@@ -158,13 +160,14 @@ An array of devices. `device_path` is included for every device that reports one
 
 ### `get --output json`
 
-An array of devices, each with a `properties` object keyed by property name and in the same order as the text output. A `driver` object appears for devices Windows knows as PnP devices (a virtual camera has none); each of its fields appears only when the registry has it. `value` and `default` are already formatted, so an enumeration property shows its label. `mode` appears only for properties that can switch modes, `supported_values` only for properties with labels, and `modes_supported` only where the driver reported capabilities.
+An array of devices, each with a `properties` object keyed by property name and in the same order as the text output. `device_path` is present for every device that reports one, and a `driver` object appears for devices Windows knows as PnP devices (a virtual camera has neither); each driver field appears only when the registry has it. `value` and `default` are already formatted, so an enumeration property shows its label. `mode` appears only for properties that can switch modes, `supported_values` only for properties with labels, and `modes_supported` only where the driver reported capabilities.
 
 ```json
 [
   {
     "index": 0,
     "name": "HD Pro Webcam C920",
+    "device_path": "\\\\?\\usb#vid_046d&pid_082d&mi_00#6&1f335e1e&1&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\\global",
     "driver": {
       "description": "HD Pro Webcam C920",
       "manufacturer": "Logitech",

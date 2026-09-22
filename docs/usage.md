@@ -34,7 +34,7 @@ wincamcfg get --camera all
 wincamcfg get --camera 0 --output json
 ```
 
-`get` is the place to start with an unfamiliar camera: it shows only the properties that camera actually supports, with the range, the default, the current value and, for properties that can switch modes, a `Modes:` list and the current mode in square brackets. Above the properties it prints a `Driver:` block with the description, manufacturer, provider, version, date and INF file Windows recorded for the device, the same details Device Manager shows. Virtual cameras have no driver block.
+`get` is the place to start with an unfamiliar camera: it shows only the properties that camera actually supports, with the range, the default, the current value and, for properties that can switch modes, a `Modes:` list and the current mode in square brackets. Above the properties it prints a `Driver:` block with the description, manufacturer, provider, version, date and INF file Windows recorded for the device, the same details Device Manager shows. Virtual cameras have no driver block. The DirectShow device path is shown under the device name for every device that reports one.
 
 ## Fix powerline-frequency flickering
 

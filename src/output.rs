@@ -21,6 +21,8 @@ pub(crate) struct DeviceOutput {
     index: usize,
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    device_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     driver: Option<DriverInfo>,
     properties: IndexMap<String, PropertyOutput>,
 }
@@ -106,6 +108,7 @@ pub(crate) fn build_device_output(idx: usize, device: &DeviceInfo) -> DeviceOutp
     DeviceOutput {
         index: idx,
         name: device.name.clone(),
+        device_path: device.device_path.clone(),
         driver: device.driver.clone(),
         properties: device
             .properties
@@ -122,6 +125,9 @@ pub(crate) fn render_json<T: serde::Serialize>(value: &T) -> Result<String> {
 pub(crate) fn render_text(outputs: &[DeviceOutput], out: &mut dyn Write) -> Result<()> {
     for output in outputs {
         writeln!(out, "[{}] {}", output.index, output.name)?;
+        if let Some(path) = &output.device_path {
+            writeln!(out, "  Device path: {path}")?;
+        }
         if let Some(driver) = &output.driver {
             writeln!(out, "  Driver:")?;
             for line in driver_lines(driver) {

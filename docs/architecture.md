@@ -198,6 +198,8 @@ classDiagram
     class DeviceOutput {
         +usize index
         +String name
+        +Option~String~ device_path
+        +Option~DriverInfo~ driver
         +IndexMap~String, PropertyOutput~ properties
     }
 
