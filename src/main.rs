@@ -21,7 +21,6 @@ mod webcam;
 use std::fmt::Write as _;
 use std::io::{self, BufWriter, Write};
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
@@ -29,7 +28,7 @@ use indexmap::IndexMap;
 use tracing::{debug, info};
 use tracing_subscriber::filter::LevelFilter;
 
-use webcam::{ComSession, ParsedValue, Property, PropertyInfo, Written};
+use webcam::{ComSession, ParsedValue, Persistence, Property, PropertyInfo, WriteOutcome, Written};
 
 /// Exit code for usage errors and failed enumeration.
 const EXIT_ERROR: u8 = 1;
@@ -300,7 +299,7 @@ fn get_device_properties(camera: &str, output: OutputFormat, out: &mut dyn Write
 
     let outputs: Vec<DeviceOutput> = indices
         .iter()
-        .map(|&idx| build_device_output(idx, devices[idx].info()))
+        .map(|&idx| build_device_output(idx, &devices[idx].info))
         .collect();
 
     match output {
@@ -325,11 +324,11 @@ fn open_dialog(camera: &str, out: &mut dyn Write) -> Result<()> {
     writeln!(
         out,
         "[{idx}] {}: opening property dialog...",
-        device.info().name
+        device.info.name
     )?;
     out.flush()?;
     device.open_property_dialog()?;
-    writeln!(out, "[{idx}] {}: dialog closed", device.info().name)?;
+    writeln!(out, "[{idx}] {}: dialog closed", device.info.name)?;
     Ok(())
 }
 
@@ -373,7 +372,7 @@ fn set_property(
     let mut results: Vec<SetResult> = Vec::new();
     for idx in indices {
         let device = &devices[idx];
-        let info = device.info();
+        let info = &device.info;
         let device_name = info.name.as_str();
 
         // (property, value) pairs to write on this device.
@@ -406,7 +405,14 @@ fn set_property(
             },
         };
 
-        let entries = apply_jobs(device, idx, &jobs, restart_device)?;
+        let entries: Vec<SetResult> = device
+            .write_all(&jobs, restart_device)?
+            .into_iter()
+            .zip(&jobs)
+            .map(|(outcome, &(prop, value))| {
+                set_result(idx, device_name, prop.property, value, outcome)
+            })
+            .collect();
 
         if output == OutputFormat::Text {
             for r in &entries {
@@ -443,161 +449,65 @@ fn set_property(
     })
 }
 
-/// How long to wait for a restarted camera to re-enumerate before giving up.
-const DEVICE_RESTART_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// A write the driver accepted: its entry in the results, what was sent.
-type Accepted = (usize, Property, Written);
-
-/// Writes each job on one device, then reads every accepted write back through
-/// a fresh handle. Some drivers keep a value only while an application has the
-/// camera open; such a write is reported as a failure, not a success, unless
-/// the driver stored it for the next device start. With `restart_device`, a
-/// stored-but-pending write triggers a device restart so it takes effect now.
-///
-/// # Errors
-/// Fails only when a requested device restart cannot be performed.
-fn apply_jobs(
-    device: &webcam::Device<'_>,
+/// Turns one write outcome into a result row, with the user-facing wording.
+fn set_result(
     idx: usize,
-    jobs: &[(&PropertyInfo, ParsedValue)],
-    restart_device: bool,
-) -> Result<Vec<SetResult>> {
-    let device_name = device.info().name.as_str();
-    let mut entries: Vec<SetResult> = Vec::with_capacity(jobs.len());
-    let mut accepted: Vec<Accepted> = Vec::new();
-
-    for &(prop, value) in jobs {
-        let property = prop.property;
-        let result = device.set(prop, value);
-        match &result {
-            Ok(written) => {
-                info!(
-                    device_index = idx,
-                    device_name,
-                    %property,
-                    ?written,
-                    "Property set"
-                );
-                accepted.push((entries.len(), property, *written));
-            }
-            Err(error) => {
-                debug!(device_index = idx, device_name, %property, ?value, %error, "Failed to set property");
-            }
-        }
-        entries.push(SetResult {
-            index: idx,
-            name: device_name.to_owned(),
-            property: property.to_string(),
-            value: match &result {
-                Ok(written) => display_written(property, *written),
-                Err(_) => display_requested(property, value),
-            },
-            success: result.is_ok(),
-            note: None,
-            error: result.err().map(|e| format!("{e:#}")),
-        });
-    }
-
-    if accepted.is_empty() {
-        return Ok(entries);
-    }
-    let properties: Vec<Property> = accepted.iter().map(|&(_, p, _)| p).collect();
-    let readings = match device.read_back(&properties) {
-        Ok(readings) => readings,
-        Err(error) => {
-            debug!(device_index = idx, device_name, %error, "Could not read values back");
-            return Ok(entries);
+    device_name: &str,
+    property: Property,
+    requested: ParsedValue,
+    outcome: WriteOutcome,
+) -> SetResult {
+    let (value, note, error) = match outcome {
+        Err(error) => (
+            display_requested(property, requested),
+            None,
+            Some(format!("{error:#}")),
+        ),
+        Ok(report) => {
+            let now = |current: webcam::CurrentValue| display_current(property, current);
+            let (note, error) = match (report.persistence, report.restarted) {
+                (Persistence::Applied | Persistence::Unverified, false) => (None, None),
+                (Persistence::Applied, true) => {
+                    (Some("applied after restarting the device".to_owned()), None)
+                }
+                (Persistence::Unverified, true) => (
+                    Some("device restarted; the value could not be read back".to_owned()),
+                    None,
+                ),
+                (Persistence::Stored(current), _) => (
+                    Some(format!(
+                        "stored by the driver and applied when the camera next starts (reconnect it or reboot); until then the device reports {} except while an application has it open",
+                        now(current)
+                    )),
+                    None,
+                ),
+                (Persistence::Dropped(current), false) => (
+                    None,
+                    Some(format!(
+                        "the driver accepted the write but the device now reports {}; this camera may keep the setting only while an application has it open",
+                        now(current)
+                    )),
+                ),
+                (Persistence::Dropped(current), true) => (
+                    None,
+                    Some(format!(
+                        "the device was restarted but still reports {}",
+                        now(current)
+                    )),
+                ),
+            };
+            (display_written(property, report.written), note, error)
         }
     };
-
-    // Writes the driver stored for the next device start rather than applied.
-    let mut pending: Vec<Accepted> = Vec::new();
-    for (&(entry, property, written), reading) in accepted.iter().zip(readings) {
-        let Some(current) = reading else { continue };
-        if written.persisted_in(current) {
-            continue;
-        }
-        let now = display_current(property, current);
-        let e = &mut entries[entry];
-        // The UVC class driver stores some controls and applies them at the
-        // next device start even when the camera drops them on close; that is
-        // a success with a caveat.
-        if device.stored_value(property) == Some(written.value) {
-            debug!(
-                device_index = idx,
-                device_name,
-                %property,
-                ?written,
-                ?current,
-                "Write stored by the driver; pending device restart"
-            );
-            e.note = Some(format!(
-                "stored by the driver and applied when the camera next starts (reconnect it or reboot); \
-                 until then the device reports {now} except while an application has it open"
-            ));
-            pending.push((entry, property, written));
-        } else {
-            debug!(
-                device_index = idx,
-                device_name,
-                %property,
-                ?written,
-                ?current,
-                "Write did not persist"
-            );
-            e.success = false;
-            e.error = Some(format!(
-                "the driver accepted the write but the device now reports {now}; \
-                 this camera may keep the setting only while an application has it open"
-            ));
-        }
+    SetResult {
+        index: idx,
+        name: device_name.to_owned(),
+        property: property.to_string(),
+        value,
+        success: error.is_none(),
+        note,
+        error,
     }
-
-    if restart_device && !pending.is_empty() {
-        restart_and_recheck(device, idx, &pending, &mut entries)?;
-    }
-    Ok(entries)
-}
-
-/// Restarts the device so the stored writes take effect, then re-reads them.
-///
-/// # Errors
-/// Fails when the restart cannot be performed or the device does not return.
-fn restart_and_recheck(
-    device: &webcam::Device<'_>,
-    idx: usize,
-    pending: &[Accepted],
-    entries: &mut [SetResult],
-) -> Result<()> {
-    let device_name = device.info().name.as_str();
-    info!(
-        device_index = idx,
-        device_name, "Restarting device to apply stored values"
-    );
-    device.restart()?;
-    let properties: Vec<Property> = pending.iter().map(|&(_, p, _)| p).collect();
-    let readings = device.read_back_when_ready(&properties, DEVICE_RESTART_TIMEOUT)?;
-    for (&(entry, property, written), reading) in pending.iter().zip(readings) {
-        let e = &mut entries[entry];
-        match reading {
-            Some(current) if written.persisted_in(current) => {
-                e.note = Some("applied after restarting the device".to_owned());
-            }
-            Some(current) => {
-                e.success = false;
-                e.note = None;
-                e.error = Some(format!(
-                    "the device was restarted but still reports {}",
-                    display_current(property, current)
-                ));
-            }
-            None => {
-                e.note = Some("device restarted; the value could not be read back".to_owned());
-            }
-        }
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -919,6 +829,84 @@ mod tests {
             ),
             "50Hz"
         );
+    }
+
+    #[test]
+    fn set_results_follow_persistence_and_restart() {
+        let written = Written {
+            value: 1,
+            mode: Mode::Manual,
+        };
+        let current = webcam::CurrentValue { value: 2, flags: 0 };
+        let report = |persistence: Persistence, restarted: bool| -> WriteOutcome {
+            Ok(webcam::WriteReport {
+                written,
+                persistence,
+                restarted,
+            })
+        };
+        let result = |outcome: WriteOutcome| {
+            set_result(
+                0,
+                "Cam",
+                Property::PowerlineFrequency,
+                ParsedValue::Manual(1),
+                outcome,
+            )
+        };
+
+        let applied = result(report(Persistence::Applied, false));
+        assert!(applied.success && applied.note.is_none() && applied.error.is_none());
+        assert_eq!(applied.value, "50Hz");
+
+        let unverified = result(report(Persistence::Unverified, false));
+        assert!(unverified.success && unverified.note.is_none());
+
+        let stored = result(report(Persistence::Stored(current), false));
+        assert!(stored.success);
+        assert!(stored.note.as_deref().unwrap().contains("reports 60Hz"));
+
+        let dropped = result(report(Persistence::Dropped(current), false));
+        assert!(!dropped.success);
+        assert!(
+            dropped
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("now reports 60Hz")
+        );
+
+        let restarted = result(report(Persistence::Applied, true));
+        assert!(restarted.success);
+        assert_eq!(
+            restarted.note.as_deref(),
+            Some("applied after restarting the device")
+        );
+
+        let still_dropped = result(report(Persistence::Dropped(current), true));
+        assert!(!still_dropped.success);
+        assert!(
+            still_dropped
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("still reports 60Hz")
+        );
+
+        let unread = result(report(Persistence::Unverified, true));
+        assert!(unread.success);
+        assert!(
+            unread
+                .note
+                .as_deref()
+                .unwrap()
+                .contains("could not be read back")
+        );
+
+        let rejected = result(Err(anyhow::anyhow!("driver said no")));
+        assert!(!rejected.success);
+        assert_eq!(rejected.value, "50Hz");
+        assert_eq!(rejected.error.as_deref(), Some("driver said no"));
     }
 
     fn output(

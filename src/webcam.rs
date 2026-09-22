@@ -44,27 +44,25 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, info, instrument, trace};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Disable_DevNode, CM_Enable_DevNode, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CONFIGRET,
     CR_ACCESS_DENIED, CR_SUCCESS,
 };
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, S_OK};
+use windows::Win32::Foundation::{HWND, S_OK};
 use windows::Win32::Media::DirectShow::{
     CameraControl_Flags_Auto, CameraControl_Flags_Manual, IAMCameraControl, IAMVideoProcAmp,
     IBaseFilter, ICreateDevEnum, VideoProcAmp_Flags_Auto, VideoProcAmp_Flags_Manual,
 };
-use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
     CoInitializeEx, CoTaskMemFree, CoUninitialize, IEnumMoniker, IMoniker,
 };
 use windows::Win32::System::Ole::{ISpecifyPropertyPages, OleCreatePropertyFrame};
-use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW};
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VariantClear};
-use windows::core::{GUID, HSTRING, IUnknown, Interface};
+use windows::Win32::System::Variant::VARIANT;
+use windows::Win32::UI::Shell::IsUserAnAdmin;
+use windows::core::{BSTR, GUID, HSTRING, IUnknown, Interface};
 
 // ---------------------------------------------------------------------------
 // COM session
@@ -512,6 +510,36 @@ impl Written {
     }
 }
 
+/// How a write fared once it was read back through a fresh handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Persistence {
+    /// The device reports the written value.
+    Applied,
+    /// The device reverted, but the UVC class driver stored the value for the
+    /// next device start.
+    Stored(CurrentValue),
+    /// The device reverted and nothing stored the value.
+    Dropped(CurrentValue),
+    /// The device could not be read back (bind failed or the driver refused).
+    Unverified,
+}
+
+/// The result of one accepted write, after read-back and any requested restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WriteReport {
+    pub written: Written,
+    pub persistence: Persistence,
+    /// The device was restarted before the final read-back.
+    pub restarted: bool,
+}
+
+/// One entry per job: the driver rejected the write, or what happened after it
+/// was accepted.
+pub(crate) type WriteOutcome = Result<WriteReport>;
+
+/// How long to wait for a restarted camera to re-enumerate before giving up.
+const DEVICE_RESTART_TIMEOUT: Duration = Duration::from_secs(15);
+
 // ---------------------------------------------------------------------------
 // Device handle
 // ---------------------------------------------------------------------------
@@ -519,17 +547,121 @@ impl Written {
 /// A capture device bound for the lifetime of a [`ComSession`].
 ///
 /// The borrowed session guarantees the moniker is released before COM shuts
-/// down; use [`Device::info`] for the plain data.
+/// down; `info` holds the plain data.
 #[derive(Debug)]
 pub(crate) struct Device<'com> {
     moniker: IMoniker,
-    info: DeviceInfo,
+    pub info: DeviceInfo,
     _com: PhantomData<&'com ComSession>,
 }
 
 impl Device<'_> {
-    pub(crate) fn info(&self) -> &DeviceInfo {
-        &self.info
+    /// Writes every job, then verifies the accepted writes through one fresh handle.
+    ///
+    /// Some drivers keep a value only while an application has the camera
+    /// open; such a write counts as [`Persistence::Dropped`] unless the class
+    /// driver stored it for the next device start ([`Persistence::Stored`]).
+    /// With `restart`, one stored write is enough to restart the device once
+    /// and read those writes again. Outcomes are returned in job order.
+    ///
+    /// # Errors
+    /// Fails only when a requested device restart cannot be performed or the
+    /// device does not come back afterwards.
+    #[instrument(skip_all, fields(device = %self.info.name, jobs = jobs.len()))]
+    pub(crate) fn write_all(
+        &self,
+        jobs: &[(&PropertyInfo, ParsedValue)],
+        restart: bool,
+    ) -> Result<Vec<WriteOutcome>> {
+        let mut outcomes: Vec<WriteOutcome> = jobs
+            .iter()
+            .map(|&(info, value)| {
+                self.set(info, value)
+                    .inspect(|written| info!(property = %info.property, ?written, "Property set"))
+                    .inspect_err(|error| {
+                        debug!(property = %info.property, ?value, %error, "Failed to set property");
+                    })
+                    .map(|written| WriteReport {
+                        written,
+                        persistence: Persistence::Unverified,
+                        restarted: false,
+                    })
+            })
+            .collect();
+
+        let accepted: Vec<usize> = (0..jobs.len()).filter(|&i| outcomes[i].is_ok()).collect();
+        if accepted.is_empty() {
+            return Ok(outcomes);
+        }
+        let properties: Vec<Property> = accepted.iter().map(|&i| jobs[i].0.property).collect();
+        match self.read_back(&properties) {
+            Ok(readings) => {
+                for (&i, reading) in accepted.iter().zip(readings) {
+                    if let Ok(report) = &mut outcomes[i] {
+                        report.persistence =
+                            self.classify(jobs[i].0.property, report.written, reading);
+                    }
+                }
+            }
+            Err(error) => debug!(%error, "Could not read values back"),
+        }
+
+        let pending: Vec<usize> = accepted
+            .into_iter()
+            .filter(|&i| {
+                matches!(
+                    outcomes[i],
+                    Ok(WriteReport {
+                        persistence: Persistence::Stored(_),
+                        ..
+                    })
+                )
+            })
+            .collect();
+        if !restart || pending.is_empty() {
+            return Ok(outcomes);
+        }
+
+        info!("Restarting device to apply stored values");
+        self.restart()?;
+        let properties: Vec<Property> = pending.iter().map(|&i| jobs[i].0.property).collect();
+        let readings = self.read_back_when_ready(&properties, DEVICE_RESTART_TIMEOUT)?;
+        for (&i, reading) in pending.iter().zip(readings) {
+            if let Ok(report) = &mut outcomes[i] {
+                report.restarted = true;
+                report.persistence = match reading {
+                    Some(current) if report.written.persisted_in(current) => Persistence::Applied,
+                    Some(current) => Persistence::Dropped(current),
+                    None => Persistence::Unverified,
+                };
+            }
+        }
+        Ok(outcomes)
+    }
+
+    /// Classifies one read-back against what was written.
+    fn classify(
+        &self,
+        property: Property,
+        written: Written,
+        reading: Option<CurrentValue>,
+    ) -> Persistence {
+        let Some(current) = reading else {
+            return Persistence::Unverified;
+        };
+        if written.persisted_in(current) {
+            return Persistence::Applied;
+        }
+        // The UVC class driver stores some controls and applies them at the
+        // next device start even when the camera drops them on close; that is
+        // a success with a caveat.
+        if self.stored_value(property) == Some(written.value) {
+            debug!(%property, ?written, ?current, "Write stored by the driver; pending device restart");
+            Persistence::Stored(current)
+        } else {
+            debug!(%property, ?written, ?current, "Write did not persist");
+            Persistence::Dropped(current)
+        }
     }
 
     /// Writes a property on this device and reports what was sent.
@@ -542,8 +674,8 @@ impl Device<'_> {
     /// # Errors
     /// Fails when the value is out of range, the requested mode is not
     /// supported, or the driver rejects the write.
-    #[instrument(skip(self, info), fields(device = %self.info.name, property = %info.property))]
-    pub(crate) fn set(&self, info: &PropertyInfo, value: ParsedValue) -> Result<Written> {
+    #[instrument(skip(self, info), fields(property = %info.property))]
+    fn set(&self, info: &PropertyInfo, value: ParsedValue) -> Result<Written> {
         let written = resolve_set(info, value)?;
 
         let filter = bind_filter(&self.moniker)?;
@@ -569,7 +701,7 @@ impl Device<'_> {
     ///
     /// # Errors
     /// Fails only when the device cannot be bound at all.
-    pub(crate) fn read_back(&self, properties: &[Property]) -> Result<Vec<Option<CurrentValue>>> {
+    fn read_back(&self, properties: &[Property]) -> Result<Vec<Option<CurrentValue>>> {
         let filter = bind_filter(&self.moniker)?;
         properties
             .iter()
@@ -584,7 +716,7 @@ impl Device<'_> {
     ///
     /// # Errors
     /// Returns the last bind error once the timeout has elapsed.
-    pub(crate) fn read_back_when_ready(
+    fn read_back_when_ready(
         &self,
         properties: &[Property],
         timeout: Duration,
@@ -613,7 +745,7 @@ impl Device<'_> {
     /// across handle closes therefore still honours the write after a
     /// reconnect or reboot. Returns `None` for vendor drivers, properties the
     /// class driver does not store, or devices without a device path.
-    pub(crate) fn stored_value(&self, property: Property) -> Option<i32> {
+    fn stored_value(&self, property: Property) -> Option<i32> {
         if property != Property::PowerlineFrequency {
             return None;
         }
@@ -630,8 +762,8 @@ impl Device<'_> {
     /// Fails without administrator rights (`CR_ACCESS_DENIED`), when the
     /// device has no usable device path, or when Configuration Manager
     /// rejects the operation.
-    #[instrument(skip(self), fields(device = %self.info.name))]
-    pub(crate) fn restart(&self) -> Result<()> {
+    #[instrument(skip(self))]
+    fn restart(&self) -> Result<()> {
         let path = self
             .info
             .device_path
@@ -727,35 +859,16 @@ fn check_configret(cr: CONFIGRET, what: &str) -> Result<()> {
     }
 }
 
-/// Whether this process runs with administrator rights (an elevated token).
+/// Whether this process runs with administrator rights.
+///
+/// `IsUserAnAdmin` checks the process token for the Administrators group.
+/// Under UAC a non-elevated administrator runs with a filtered token in which
+/// that group is deny-only, so the check answers false until the process is
+/// elevated, which is exactly what `--restart-device` needs to know.
 #[must_use]
 pub(crate) fn is_elevated() -> bool {
-    let mut token = HANDLE::default();
-    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no
-    // closing; `token` is a valid out-slot for the call's duration.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }.is_err() {
-        return false;
-    }
-    let mut elevation = TOKEN_ELEVATION::default();
-    let mut returned = 0u32;
-    let Ok(len) = u32::try_from(size_of::<TOKEN_ELEVATION>()) else {
-        return false;
-    };
-    // SAFETY: `token` is an open token handle; `elevation` is a valid
-    // TOKEN_ELEVATION buffer whose exact size is passed; `returned` is a valid
-    // out-slot. All outlive the call.
-    let queried = unsafe {
-        GetTokenInformation(
-            token,
-            TokenElevation,
-            Some((&raw mut elevation).cast()),
-            len,
-            &raw mut returned,
-        )
-    };
-    // SAFETY: closes the handle opened above, exactly once.
-    let _ = unsafe { CloseHandle(token) };
-    queried.is_ok() && elevation.TokenIsElevated != 0
+    // SAFETY: plain FFI call with no arguments.
+    unsafe { IsUserAnAdmin() }.as_bool()
 }
 
 /// Converts a DirectShow device path into a PnP device instance id.
@@ -774,37 +887,18 @@ fn device_instance_id(device_path: &str) -> Option<String> {
 ///
 /// This key is world-readable, so no elevation is needed.
 fn read_device_parameter_dword(instance_id: &str, value_name: &str) -> Option<i32> {
-    let subkey = HSTRING::from(format!(
-        "SYSTEM\\CurrentControlSet\\Enum\\{instance_id}\\Device Parameters"
-    ));
-    let value = HSTRING::from(value_name);
-    let mut data: u32 = 0;
-    let mut size = u32::try_from(size_of::<u32>()).ok()?;
-    // SAFETY: `subkey` and `value` are valid NUL-terminated wide strings that
-    // outlive the call; `data` is a valid 4-byte buffer and `size` holds its
-    // length, both living for the duration of the call. RRF_RT_REG_DWORD makes
-    // the API reject any value that is not exactly a DWORD.
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            &subkey,
-            &value,
-            RRF_RT_REG_DWORD,
-            None,
-            Some((&raw mut data).cast()),
-            Some(&raw mut size),
-        )
-    };
-    if status.is_err() {
-        trace!(
-            instance_id,
-            value_name,
-            ?status,
-            "No stored device parameter"
-        );
-        return None;
+    let key = windows_registry::LOCAL_MACHINE
+        .open(format!(
+            "SYSTEM\\CurrentControlSet\\Enum\\{instance_id}\\Device Parameters"
+        ))
+        .ok()?;
+    match key.get_u32(value_name) {
+        Ok(data) => i32::try_from(data).ok(),
+        Err(error) => {
+            trace!(instance_id, value_name, %error, "No stored device parameter");
+            None
+        }
     }
-    i32::try_from(data).ok()
 }
 
 /// Turns a requested value into the value and mode the driver will be sent.
@@ -1113,20 +1207,6 @@ fn friendly_name(moniker: &IMoniker) -> String {
     read_bag_string(moniker, "FriendlyName").unwrap_or_else(|_| "Unknown".to_owned())
 }
 
-/// A `VARIANT` that is always cleared, whatever happens after it is filled.
-#[derive(Default)]
-struct OwnedVariant(VARIANT);
-
-impl Drop for OwnedVariant {
-    fn drop(&mut self) {
-        // SAFETY: `self.0` is an initialised VARIANT (VT_EMPTY from `Default`
-        // or filled by `IPropertyBag::Read`); `VariantClear` releases whatever
-        // it owns and resets it to VT_EMPTY. The result is irrelevant while
-        // dropping.
-        let _ = unsafe { VariantClear(&raw mut self.0) };
-    }
-}
-
 /// Reads a string-valued entry (`FriendlyName`, `DevicePath`) from a device's property bag.
 fn read_bag_string(moniker: &IMoniker, property: &str) -> Result<String> {
     // SAFETY: `moniker` is a live interface; the result type is checked
@@ -1135,22 +1215,17 @@ fn read_bag_string(moniker: &IMoniker, property: &str) -> Result<String> {
         .with_context(|| format!("Failed to bind property bag for '{property}'"))?;
 
     let name = HSTRING::from(property);
-    let mut var = OwnedVariant::default();
+    // windows-rs's `VARIANT` clears itself on drop, whatever `Read` stores in it.
+    let mut var = VARIANT::default();
     // SAFETY: `bag` is a live interface; `name` is a valid NUL-terminated wide
-    // string that outlives the call; `var.0` is a valid, initialised VARIANT
+    // string that outlives the call; `var` is a valid, initialised VARIANT
     // out-parameter; no error log is supplied.
-    unsafe { bag.Read(&name, &raw mut var.0, None) }
+    unsafe { bag.Read(&name, &raw mut var, None) }
         .with_context(|| format!("Failed to read property '{property}'"))?;
 
-    // SAFETY: `vt` is always initialised and identifies the active union member.
-    let vt = unsafe { var.0.Anonymous.Anonymous.vt };
-    if vt != VT_BSTR {
-        bail!("Property '{property}' is not a string (VARTYPE {})", vt.0);
-    }
-    // SAFETY: `vt == VT_BSTR` was checked, so `bstrVal` is the active member.
-    // The BSTR is only borrowed (never moved out of its `ManuallyDrop`), and
-    // `OwnedVariant::drop` frees it via `VariantClear`.
-    let value = unsafe { &var.0.Anonymous.Anonymous.Anonymous.bstrVal }.to_string();
+    let value = BSTR::try_from(&var)
+        .with_context(|| format!("Property '{property}' is not a string ({:?})", var.vt()))?
+        .to_string();
     trace!(property, value = %value, "Property bag entry read");
     Ok(value)
 }
