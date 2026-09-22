@@ -1,22 +1,19 @@
 //! One handler per subcommand: enumerate, select cameras, act, and write rows.
 
 use std::io::Write;
-use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info};
 
 use crate::OutputFormat;
 use crate::output::{
-    DeviceOutput, SetResult, build_device_output, display_current, display_requested,
-    display_written, render_json, render_text,
+    DeviceOutput, SetResult, build_device_output, display_requested, display_value, render_json,
+    render_set_rows, render_text,
 };
 use crate::webcam::{
-    self, ComSession, CurrentValue, ParsedValue, Persistence, Property, PropertyInfo, WriteOutcome,
+    self, ComSession, CurrentValue, Mode, ParsedValue, Persistence, Property, PropertyInfo,
+    WriteOutcome,
 };
-
-/// Exit code when `set` ran but one or more writes failed.
-const EXIT_PARTIAL_FAILURE: u8 = 2;
 
 pub(crate) fn list_devices(
     include_device_path: bool,
@@ -86,7 +83,33 @@ pub(crate) fn open_dialog(camera: &str, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// Runs `set`; `value` is `None` for `--default` (clap guarantees exactly one of the two).
+/// What `set` writes on each selected device.
+#[derive(Debug, Clone, Copy)]
+enum Request {
+    /// `--property all --default`: every supported property back to its default.
+    ResetAll,
+    One(Property, ParsedValue),
+}
+
+/// Resolves `--property` and `--value` once, up front, so a typo is a usage
+/// error (exit 1) rather than a per-device failure. `value` is `None` for
+/// `--default`; clap guarantees exactly one of the two was given.
+fn parse_request(property: &str, value: Option<&str>) -> Result<Request> {
+    if property.eq_ignore_ascii_case("all") {
+        if value.is_some() {
+            bail!("Property 'all' can only be used with --default");
+        }
+        return Ok(Request::ResetAll);
+    }
+    let property: Property = property.parse()?;
+    let value = match value {
+        None => ParsedValue::Default,
+        Some(text) => webcam::parse_property_value(property, text)?,
+    };
+    Ok(Request::One(property, value))
+}
+
+/// Runs `set`; returns whether every write succeeded.
 pub(crate) fn set_property(
     camera: &str,
     property: &str,
@@ -94,7 +117,7 @@ pub(crate) fn set_property(
     restart_device: bool,
     output: OutputFormat,
     out: &mut dyn Write,
-) -> Result<ExitCode> {
+) -> Result<bool> {
     debug!(
         camera,
         property,
@@ -103,44 +126,26 @@ pub(crate) fn set_property(
         ?output,
         "Setting property"
     );
-    let select_all = camera.eq_ignore_ascii_case("all");
-    let reset_all = property.eq_ignore_ascii_case("all");
-    if reset_all && value.is_some() {
-        bail!("Property 'all' can only be used with --default");
-    }
+    let request = parse_request(property, value)?;
     if restart_device && !webcam::is_elevated() {
         bail!("--restart-device needs administrator rights; run this from an elevated prompt");
     }
-
     let com = ComSession::new()?;
     let devices = webcam::open_devices(&com).context("Failed to enumerate devices")?;
-    let indices = parse_camera_selection(camera, devices.len())?;
-
-    // Resolve the property name and parse the value once, up front: a typo is
-    // a usage error (exit 1), not a per-device failure.
-    let request: Option<(Property, ParsedValue)> = if reset_all {
-        None
-    } else {
-        let property: Property = property.parse()?;
-        let value = match value {
-            None => ParsedValue::Default,
-            Some(text) => webcam::parse_property_value(property, text)?,
-        };
-        Some((property, value))
-    };
+    let select_all = camera.eq_ignore_ascii_case("all");
 
     let mut results: Vec<SetResult> = Vec::new();
-    for idx in indices {
+    for idx in parse_camera_selection(camera, devices.len())? {
         let device = &devices[idx];
-        let info = &device.info;
-        let device_name = info.name.as_str();
+        let device_name = device.info.name.as_str();
         let jobs: Vec<(&PropertyInfo, ParsedValue)> = match request {
-            None => info
+            Request::ResetAll => device
+                .info
                 .properties
                 .iter()
                 .map(|p| (p, ParsedValue::Default))
                 .collect(),
-            Some((property, value)) => match info.property(property) {
+            Request::One(property, value) => match device.info.property(property) {
                 Some(p) => vec![(p, value)],
                 // With `--camera all`, devices that lack the property are
                 // skipped so one virtual camera cannot fail a fleet-wide set.
@@ -152,13 +157,12 @@ pub(crate) fn set_property(
                             "[{idx}] {device_name}: {property} not supported (skipped)"
                         )?;
                     }
-                    Vec::new()
+                    continue;
                 }
                 None => bail!("Property '{property}' not found on device '{device_name}'"),
             },
         };
-
-        let entries: Vec<SetResult> = device
+        let rows: Vec<SetResult> = device
             .write_all(&jobs, restart_device)?
             .into_iter()
             .zip(&jobs)
@@ -167,26 +171,15 @@ pub(crate) fn set_property(
             })
             .collect();
         if output == OutputFormat::Text {
-            for r in &entries {
-                let line = match (&r.error, &r.note) {
-                    (Some(error), _) => format!("Failed to set {} - {error}", r.property),
-                    (None, Some(note)) => format!("{} set to {} ({note})", r.property, r.value),
-                    (None, None) => format!("{} set to {}", r.property, r.value),
-                };
-                writeln!(out, "[{idx}] {device_name}: {line}")?;
-            }
+            render_set_rows(&rows, out)?;
         }
-        results.extend(entries);
+        results.extend(rows);
     }
 
     if output == OutputFormat::Json {
         writeln!(out, "{}", render_json(&results)?)?;
     }
-    Ok(if results.iter().all(|r| r.success) {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(EXIT_PARTIAL_FAILURE)
-    })
+    Ok(results.iter().all(|r| r.success))
 }
 
 /// Turns one write outcome into a result row, with the user-facing wording.
@@ -212,8 +205,13 @@ fn set_result(
             row.error = Some(format!("{error:#}"));
         }
         Ok(report) => {
-            row.value = display_written(property, report.written);
-            let now = |current: CurrentValue| display_current(property, current);
+            row.value = display_value(
+                property,
+                report.written.value,
+                report.written.mode == Mode::Auto,
+            );
+            let now =
+                |current: CurrentValue| display_value(property, current.value, current.is_auto());
             match (report.persistence, report.restarted) {
                 (Persistence::Applied | Persistence::Unverified, false) => {}
                 (Persistence::Applied, true) => {
@@ -269,7 +267,7 @@ fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use webcam::{Mode, WriteReport, Written};
+    use webcam::{WriteReport, Written};
 
     #[test]
     fn camera_selection_accepts_all_and_indices() {

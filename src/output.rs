@@ -9,7 +9,7 @@ use std::io::Write;
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
 
-use crate::webcam::{self, CurrentValue, DeviceInfo, ParsedValue, Property, Written};
+use crate::webcam::{self, DeviceInfo, ParsedValue, Property, PropertyInfo};
 
 // ---------------------------------------------------------------------------
 // Output structures
@@ -17,9 +17,9 @@ use crate::webcam::{self, CurrentValue, DeviceInfo, ParsedValue, Property, Writt
 
 /// One device with its formatted properties, for `get`.
 #[derive(Debug, serde::Serialize)]
-pub(crate) struct DeviceOutput<'a> {
+pub(crate) struct DeviceOutput {
     index: usize,
-    name: &'a str,
+    name: String,
     properties: IndexMap<String, PropertyOutput>,
 }
 
@@ -59,12 +59,13 @@ pub(crate) struct SetResult {
 // Formatting
 // ---------------------------------------------------------------------------
 
-/// What was actually sent to the driver, e.g. `50Hz` or `4000 [Auto]`.
-pub(crate) fn display_written(property: Property, written: Written) -> String {
-    let value = webcam::format_property_value(property, written.value);
-    match written.mode {
-        webcam::Mode::Manual => value,
-        webcam::Mode::Auto => format!("{value} [Auto]"),
+/// A value with its mode, e.g. `50Hz` or `4000 [Auto]`.
+pub(crate) fn display_value(property: Property, value: i32, auto: bool) -> String {
+    let value = webcam::format_property_value(property, value);
+    if auto {
+        format!("{value} [Auto]")
+    } else {
+        value
     }
 }
 
@@ -77,47 +78,37 @@ pub(crate) fn display_requested(property: Property, value: ParsedValue) -> Strin
     }
 }
 
-/// What the device reports now, e.g. `50Hz` or `3534 [Auto]`.
-pub(crate) fn display_current(property: Property, current: CurrentValue) -> String {
-    let value = webcam::format_property_value(property, current.value);
-    if current.is_auto() {
-        format!("{value} [Auto]")
-    } else {
-        value
+impl From<&PropertyInfo> for PropertyOutput {
+    fn from(prop: &PropertyInfo) -> Self {
+        let property = prop.property;
+        Self {
+            value: prop
+                .current
+                .map(|c| webcam::format_property_value(property, c.value)),
+            mode: prop
+                .current
+                .and_then(|c| webcam::current_mode(prop.caps, c))
+                .map(|m| m.to_string()),
+            default: webcam::format_property_value(property, prop.default),
+            min: prop.min,
+            max: prop.max,
+            step: prop.step,
+            supported_values: webcam::build_enum_display(property, prop.min, prop.max),
+            modes_supported: webcam::format_capabilities(prop.caps),
+        }
     }
 }
 
 /// Converts a device's property list into display-ready output.
-pub(crate) fn build_device_output(idx: usize, device: &DeviceInfo) -> DeviceOutput<'_> {
-    let properties = device
-        .properties
-        .iter()
-        .map(|prop| {
-            let property = prop.property;
-            (
-                property.to_string(),
-                PropertyOutput {
-                    value: prop
-                        .current
-                        .map(|c| webcam::format_property_value(property, c.value)),
-                    mode: prop
-                        .current
-                        .and_then(|c| webcam::current_mode(prop.caps, c))
-                        .map(|m| m.to_string()),
-                    default: webcam::format_property_value(property, prop.default),
-                    min: prop.min,
-                    max: prop.max,
-                    step: prop.step,
-                    supported_values: webcam::build_enum_display(property, prop.min, prop.max),
-                    modes_supported: webcam::format_capabilities(prop.caps),
-                },
-            )
-        })
-        .collect();
+pub(crate) fn build_device_output(idx: usize, device: &DeviceInfo) -> DeviceOutput {
     DeviceOutput {
         index: idx,
-        name: &device.name,
-        properties,
+        name: device.name.clone(),
+        properties: device
+            .properties
+            .iter()
+            .map(|prop| (prop.property.to_string(), PropertyOutput::from(prop)))
+            .collect(),
     }
 }
 
@@ -136,6 +127,19 @@ pub(crate) fn render_text(outputs: &[DeviceOutput], out: &mut dyn Write) -> Resu
             writeln!(out, "    {name}: {}", format_property_line(prop))?;
         }
         writeln!(out)?;
+    }
+    Ok(())
+}
+
+/// Writes one text line per `set` result row.
+pub(crate) fn render_set_rows(rows: &[SetResult], out: &mut dyn Write) -> Result<()> {
+    for r in rows {
+        let line = match (&r.error, &r.note) {
+            (Some(error), _) => format!("Failed to set {} - {error}", r.property),
+            (None, Some(note)) => format!("{} set to {} ({note})", r.property, r.value),
+            (None, None) => format!("{} set to {}", r.property, r.value),
+        };
+        writeln!(out, "[{}] {}: {line}", r.index, r.name)?;
     }
     Ok(())
 }
@@ -180,24 +184,19 @@ fn format_property_line(prop: &PropertyOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use webcam::Mode;
 
     #[test]
     fn display_values_use_labels_and_modes() {
-        let written = |value, mode| Written { value, mode };
-        let current = |value, flags| CurrentValue { value, flags };
         assert_eq!(
-            display_written(Property::PowerlineFrequency, written(1, Mode::Manual)),
+            display_value(Property::PowerlineFrequency, 1, false),
             "50Hz"
         );
+        assert_eq!(display_value(Property::Brightness, 128, false), "128");
         assert_eq!(
-            display_written(Property::Brightness, written(128, Mode::Manual)),
-            "128"
-        );
-        assert_eq!(
-            display_written(Property::WhiteBalance, written(4000, Mode::Auto)),
+            display_value(Property::WhiteBalance, 4000, true),
             "4000 [Auto]"
         );
+        assert_eq!(display_value(Property::Exposure, -6, true), "-6 [Auto]");
         assert_eq!(
             display_requested(Property::Focus, ParsedValue::Auto),
             "Auto"
@@ -207,15 +206,10 @@ mod tests {
             "default"
         );
         assert_eq!(
-            display_current(Property::Exposure, current(-6, Mode::Auto.flag())),
-            "-6 [Auto]"
-        );
-        assert_eq!(
-            display_current(Property::PowerlineFrequency, current(1, 0)),
-            "50Hz"
+            display_requested(Property::Gain, ParsedValue::Manual(3)),
+            "3"
         );
     }
-
     fn output(
         value: Option<&str>,
         min: i32,

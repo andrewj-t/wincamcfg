@@ -19,6 +19,8 @@ use tracing_subscriber::filter::LevelFilter;
 
 /// Exit code for usage errors and failed enumeration.
 const EXIT_ERROR: u8 = 1;
+/// Exit code when `set` ran but one or more writes failed.
+const EXIT_PARTIAL_FAILURE: u8 = 2;
 
 // ---------------------------------------------------------------------------
 // Command line
@@ -169,14 +171,17 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode> {
             output,
             ..
         } => {
-            return commands::set_property(
+            let all_ok = commands::set_property(
                 &camera,
                 &property,
                 value.as_deref(),
                 restart_device,
                 output,
                 out,
-            );
+            )?;
+            if !all_ok {
+                return Ok(ExitCode::from(EXIT_PARTIAL_FAILURE));
+            }
         }
     }
     Ok(ExitCode::SUCCESS)

@@ -231,3 +231,13 @@ See [SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
 ## Contributing
 
 Bug reports and PRs welcome. Before opening a PR run `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings` and `cargo test`; CI enforces all three. For bugs, please include a reproduction case: camera model, the exact command you ran, and a trace log if you can get one. [TROUBLESHOOTING.md](TROUBLESHOOTING.md) covers how to capture the log.
+
+### Code layout
+
+- `src/main.rs`: clap definitions, entry point, exit codes.
+- `src/commands.rs`: one handler per subcommand.
+- `src/output.rs`: result rows and their text and JSON rendering.
+- `src/webcam.rs`: COM session, device enumeration, property reads and writes with read-back verification, device restart, the driver's dialog. The only module that calls Windows.
+- `src/webcam/property.rs`: property identifiers, modes, labels and value parsing. No Windows calls, so it carries most of the unit tests.
+
+Unit tests sit next to the code they cover and need no camera. Nothing that touches COM is unit-tested, so check `list`, `get` and `set` against a real camera after changing `src/webcam.rs`.

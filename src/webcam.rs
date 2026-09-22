@@ -96,16 +96,6 @@ const CLSID_VIDEO_INPUT_DEVICE_CATEGORY: GUID =
 // Device data
 // ---------------------------------------------------------------------------
 
-/// Range, default and capability flags reported by `GetRange`.
-#[derive(Debug, Clone, Copy, Default)]
-struct PropertyRange {
-    min: i32,
-    max: i32,
-    step: i32,
-    default: i32,
-    caps: i32,
-}
-
 /// Plain data describing a device; holds no COM interfaces.
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceInfo {
@@ -205,62 +195,63 @@ impl Device<'_> {
         if accepted.is_empty() {
             return Ok(outcomes);
         }
-        let properties: Vec<Property> = accepted.iter().map(|&i| jobs[i].0.property).collect();
-        let mut pending = Vec::new();
-        match self.read_back(&properties) {
-            Ok(readings) => {
-                for (&i, reading) in accepted.iter().zip(readings) {
-                    if let Ok(report) = &mut outcomes[i] {
-                        report.persistence =
-                            self.classify(jobs[i].0.property, report.written, reading);
-                        if matches!(report.persistence, Persistence::Stored(_)) {
-                            pending.push(i);
-                        }
-                    }
-                }
+        let props = |indices: &[usize]| -> Vec<Property> {
+            indices.iter().map(|&i| jobs[i].0.property).collect()
+        };
+        let stored = match self.read_back(&props(&accepted)) {
+            Ok(readings) => self.record_readings(jobs, &mut outcomes, &accepted, readings, false),
+            Err(error) => {
+                debug!(%error, "Could not read values back");
+                Vec::new()
             }
-            Err(error) => debug!(%error, "Could not read values back"),
-        }
-        if !restart || pending.is_empty() {
+        };
+        if !restart || stored.is_empty() {
             return Ok(outcomes);
         }
-
         info!("Restarting device to apply stored values");
         self.restart()?;
-        let properties: Vec<Property> = pending.iter().map(|&i| jobs[i].0.property).collect();
-        let readings = self.read_back_when_ready(&properties, DEVICE_RESTART_TIMEOUT)?;
-        for (&i, reading) in pending.iter().zip(readings) {
-            if let Ok(report) = &mut outcomes[i] {
-                report.restarted = true;
-                report.persistence = match reading {
-                    Some(current) if report.written.persisted_in(current) => Persistence::Applied,
-                    Some(current) => Persistence::Dropped(current),
-                    None => Persistence::Unverified,
-                };
-            }
-        }
+        let readings = self.read_back_when_ready(&props(&stored), DEVICE_RESTART_TIMEOUT)?;
+        self.record_readings(jobs, &mut outcomes, &stored, readings, true);
         Ok(outcomes)
     }
 
-    /// Classifies one read-back against what was written.
-    fn classify(
+    /// Classifies each read-back against its write; returns the indices the driver only stored.
+    ///
+    /// `readings` pairs with `indices`. After a restart the stored-value check
+    /// is skipped: a value the device still does not report has been dropped.
+    fn record_readings(
         &self,
-        property: Property,
-        written: Written,
-        reading: Option<CurrentValue>,
-    ) -> Persistence {
-        let Some(current) = reading else {
-            return Persistence::Unverified;
-        };
-        if written.persisted_in(current) {
-            Persistence::Applied
-        } else if self.stored_value(property) == Some(written.value) {
-            debug!(%property, ?written, ?current, "Write stored by the driver; pending device restart");
-            Persistence::Stored(current)
-        } else {
-            debug!(%property, ?written, ?current, "Write did not persist");
-            Persistence::Dropped(current)
+        jobs: &[(&PropertyInfo, ParsedValue)],
+        outcomes: &mut [WriteOutcome],
+        indices: &[usize],
+        readings: Vec<Option<CurrentValue>>,
+        restarted: bool,
+    ) -> Vec<usize> {
+        let mut stored = Vec::new();
+        for (&i, reading) in indices.iter().zip(readings) {
+            let Ok(report) = &mut outcomes[i] else {
+                continue;
+            };
+            let property = jobs[i].0.property;
+            let written = report.written;
+            report.restarted = restarted;
+            report.persistence = match reading {
+                None => Persistence::Unverified,
+                Some(current) if written.persisted_in(current) => Persistence::Applied,
+                Some(current)
+                    if !restarted && self.stored_value(property) == Some(written.value) =>
+                {
+                    debug!(%property, ?written, ?current, "Write stored by the driver; pending device restart");
+                    stored.push(i);
+                    Persistence::Stored(current)
+                }
+                Some(current) => {
+                    debug!(%property, ?written, ?current, "Write did not persist");
+                    Persistence::Dropped(current)
+                }
+            };
         }
+        stored
     }
 
     /// Writes one of this device's properties; success means the driver accepted it.
@@ -452,7 +443,7 @@ fn read_device_parameter_dword(instance_id: &str, value_name: &str) -> Option<i3
 trait PropertyControl: Interface {
     const KIND: PropertyType;
 
-    fn range(&self, id: i32) -> windows::core::Result<PropertyRange>;
+    fn range(&self, property: Property) -> windows::core::Result<PropertyInfo>;
     fn get(&self, id: i32) -> windows::core::Result<CurrentValue>;
     fn set(&self, id: i32, value: i32, flags: i32) -> windows::core::Result<()>;
 }
@@ -463,20 +454,28 @@ macro_rules! impl_property_control {
         impl PropertyControl for $interface {
             const KIND: PropertyType = $kind;
 
-            fn range(&self, id: i32) -> windows::core::Result<PropertyRange> {
-                let mut r = PropertyRange::default();
+            fn range(&self, property: Property) -> windows::core::Result<PropertyInfo> {
+                let (mut min, mut max, mut step, mut default, mut caps) = (0, 0, 0, 0, 0);
                 // SAFETY: `self` is a live interface; the out-pointers are locals outliving the call.
                 unsafe {
                     self.GetRange(
-                        id,
-                        &raw mut r.min,
-                        &raw mut r.max,
-                        &raw mut r.step,
-                        &raw mut r.default,
-                        &raw mut r.caps,
+                        property.id(),
+                        &raw mut min,
+                        &raw mut max,
+                        &raw mut step,
+                        &raw mut default,
+                        &raw mut caps,
                     )
                 }?;
-                Ok(r)
+                Ok(PropertyInfo {
+                    property,
+                    min,
+                    max,
+                    step,
+                    default,
+                    caps,
+                    current: None,
+                })
             }
 
             fn get(&self, id: i32) -> windows::core::Result<CurrentValue> {
@@ -530,21 +529,13 @@ fn query_properties<C: PropertyControl>(filter: &IBaseFilter) -> Result<Vec<Prop
         .into_iter()
         .filter(|p| p.kind() == C::KIND)
         .filter_map(|property| {
-            let range = iface
-                .range(property.id())
+            let mut info = iface
+                .range(property)
                 .inspect_err(|_| trace!(%property, "GetRange failed; property not supported"))
                 .ok()?;
-            let current = iface.get(property.id()).ok();
-            trace!(%property, ?range, ?current, "Property queried");
-            Some(PropertyInfo {
-                property,
-                min: range.min,
-                max: range.max,
-                step: range.step,
-                default: range.default,
-                caps: range.caps,
-                current,
-            })
+            info.current = iface.get(property.id()).ok();
+            trace!(?info, "Property queried");
+            Some(info)
         })
         .collect();
     debug!(kind = ?C::KIND, count = properties.len(), "Properties enumerated");
