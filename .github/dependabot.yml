@@ -1,30 +1,38 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
-
+# Dependabot policy
+#
+# - cargo: security advisories only (open-pull-requests-limit: 0 disables
+#   version updates). Routine freshness is manual: run `cargo update` when
+#   making other changes anyway.
+# - github-actions: version updates ARE enabled so the commit-SHA pins in
+#   .github/workflows stay current.
+#
+# Neither kind of PR releases anything by itself. Merged updates accumulate
+# in the release PR that release-plz maintains (see release-plz.toml) and
+# ship when that PR is merged. The commit-message prefixes below are
+# Conventional Commit types that release-plz uses to sort the changelog:
+# dependency bumps land under "Dependencies", CI pin refreshes are omitted.
 version: 2
-# Version updates are disabled (open-pull-requests-limit: 0) — Dependabot only
-# raises PRs for security advisories. Routine dependency freshness is handled
-# manually: run `cargo update` when making other changes anyway.
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 0
+    commit-message:
+      prefix: "build(deps)"
     groups:
       security-updates:
         applies-to: security-updates
         patterns:
           - "*"
-  - package-ecosystem: github-actions
-    directory: "/.github/workflows"
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
     groups:
-      security-updates:
-        applies-to: security-updates
+      actions:
         patterns:
           - "*"

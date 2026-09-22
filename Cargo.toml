@@ -1,11 +1,19 @@
 [package]
 name = "wincamcfg"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
+# Minimum supported Rust version. The code uses let-chains (stable since 1.88).
+# CI has an `msrv` job that checks the build on exactly this version.
+rust-version = "1.88"
 description = "A command line utility for managing webcam configuration on windows"
 license = "MIT"
 repository = "https://github.com/andrewj-t/wincamcfg/"
 homepage = "https://github.com/andrewj-t/wincamcfg/"
+readme = "README.md"
+keywords = ["webcam", "directshow", "camera", "windows", "cli"]
+categories = ["command-line-utilities", "multimedia::video", "os::windows-apis"]
+# Distributed as a GitHub release binary, not through crates.io.
+publish = false
 
 [dependencies]
 anyhow = "1.0"
@@ -14,13 +22,89 @@ indexmap = { version = "2.14", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
-windows = { version = ">=0.59, <=0.62", features = [
+# Only the plain formatter is needed; `ansi` and the `log` bridge would pull
+# nu-ansi-term, tracing-log and friends for no benefit.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+# Default features are kept on purpose: they only add `std`, which is required
+# for `windows::core::Error` to implement `std::error::Error` (anyhow interop).
+# `Win32_System_Ole` is required because it gates the `VARIANT` type.
+windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
-    "Win32_Media_DirectShow",
-    "Win32_System_Variant",
     "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_Media_DirectShow",
 ] }
+
+# Lint policy follows Microsoft's Pragmatic Rust Guidelines (M-STATIC-VERIFICATION).
+# CI runs `cargo clippy --all-targets -- -D warnings`, so every warning below is a
+# build failure there. Per-item overrides must use #[expect(..., reason = "...")].
+[lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+# Additional lints from the `restriction` and `nursery` groups that prevent
+# specific constructs in order to drive up consistency, quality and brevity.
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+too_long_first_doc_paragraph = "warn"
+
+# May cause issues with structured logging otherwise.
+literal_string_with_formatting_args = "allow"
+
+# Project opt-outs
+# Duplicate transitive crate versions arrive through Dependabot security bumps
+# and would fail CI without any change to this code; review with `cargo tree -d`.
+multiple_crate_versions = "allow"
 
 [build-dependencies]
 winresource = "0.1"
+
+[profile.release]
+# Single small binary: whole-program LTO and one codegen unit cost seconds of
+# build time and give the smallest, fastest executable.
+lto = "fat"
+codegen-units = 1
+# Nothing catches panics (no catch_unwind), so unwinding machinery is dead weight.
+panic = "abort"
+# Symbols are not needed in the shipped binary; crash triage uses trace logs.
+strip = "symbols"
+# There are no hot loops; a loud abort beats a silent wrap on bad arithmetic.
+overflow-checks = true

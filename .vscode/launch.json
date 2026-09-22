@@ -5,7 +5,7 @@
             "type": "lldb",
             "request": "launch",
             "name": "Debug - List Devices",
-            "program": "${workspaceFolder}/target/debug/rswebcamfix.exe",
+            "program": "${workspaceFolder}/target/debug/wincamcfg.exe",
             "args": ["list"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cargo build"
@@ -14,7 +14,7 @@
             "type": "lldb",
             "request": "launch",
             "name": "Debug - No Args (Help)",
-            "program": "${workspaceFolder}/target/debug/rswebcamfix.exe",
+            "program": "${workspaceFolder}/target/debug/wincamcfg.exe",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cargo build"

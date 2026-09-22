@@ -1,32 +1,24 @@
 name: CI
 
+# Least privilege by default; jobs that need more declare it themselves.
 permissions:
   contents: read
 
+# No path filter: "Build and Test" is a required check on main, so it must
+# report on every PR (including docs-only ones) or the PR can never merge.
 on:
   pull_request:
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'build.rs'
-      - '.github/workflows/**'
   push:
     branches:
       - main
-      - develop
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'build.rs'
-      - '.github/workflows/**'
 
 env:
   CARGO_TERM_COLOR: always
+  # .cargo/config.toml supplies rustflags (Control Flow Guard); a RUSTFLAGS
+  # environment variable would replace them, so none is set here.
 
-# ensure that the workflow is only triggered once per PR, subsequent pushes to the PR will cancel
-# and restart the workflow. See https://docs.github.com/en/actions/using-jobs/using-concurrency
+# Ensure the workflow only runs once per PR; subsequent pushes cancel and
+# restart it. See https://docs.github.com/en/actions/using-jobs/using-concurrency
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -38,46 +30,60 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v7
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Cache cargo registry
-      uses: actions/cache@v6
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        persist-credentials: false
 
-    - name: Cache cargo index
-      uses: actions/cache@v6
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+    # rustup on the runner installs the toolchain named in rust-toolchain.toml.
+    - name: Install Rust toolchain
+      run: |
+        rustup toolchain install
+        rustup show active-toolchain
 
-    - name: Cache cargo build
-      uses: actions/cache@v6
+    - name: Cache cargo registry and build
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock') }}
 
     - name: Check formatting
       run: cargo fmt --all -- --check
 
     - name: Run clippy
-      run: cargo clippy -- -D warnings
+      run: cargo clippy --all-targets --locked -- -D warnings
 
     - name: Build
-      run: cargo build --release --verbose
+      run: cargo build --release --locked --verbose
 
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --locked --verbose
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: wincamcfg-windows
         path: target/release/wincamcfg.exe
+
+  # Proves the crate still builds on the declared minimum supported Rust
+  # version (rust-version in Cargo.toml).
+  msrv:
+    name: MSRV (1.88)
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install Rust 1.88.0
+      run: rustup toolchain install 1.88.0 --profile minimal
+
+    - name: Check with MSRV
+      run: cargo +1.88.0 check --locked --all-targets
 
   # Warns (never fails) when semver-compatible dependency updates are available,
   # so the manual "cargo update alongside other changes" policy doesn't get missed.
@@ -88,10 +94,12 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Install Rust toolchain
+      run: rustup toolchain install
 
     - name: Check lockfile freshness
       shell: bash
@@ -133,15 +141,17 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
+      uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
       with:
         languages: ${{ matrix.language }}
         build-mode: none
 
     - name: Analyze
-      uses: github/codeql-action/analyze@v4
+      uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
       with:
         category: '/language:${{ matrix.language }}'

@@ -1,63 +1,50 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository. Anything the code or its doc comments already say is left out; read `src/main.rs` and `src/webcam.rs` (module docs first) for the architecture.
 
-## Project Overview
+## What this is
 
-**wincamcfg** is a Windows-only CLI utility for managing webcam properties via DirectShow/COM APIs. Primary use case: fixing powerline frequency flickering (50Hz/60Hz) and configuring camera properties programmatically.
+**wincamcfg** is a Windows-only CLI that reads and writes webcam properties through DirectShow. Two source files: `src/main.rs` (clap CLI, output, exit codes) and `src/webcam.rs` (COM, DirectShow, value parsing). Keep it that shape: no lib/bin split, no mocking trait, no extra crates unless they remove code.
 
-- Rust 2024 edition, Windows-only target
-- Branches: `main` (releases), `develop` (active development)
+Branches: `main` releases; feature work happens on short-lived branches merged via PR. Push the branch and stop; the maintainer opens PRs.
 
-## Build & Development Commands
+## Commands
 
 ```bash
-cargo build --release          # Build optimized binary
-cargo test --verbose           # Run tests
-cargo fmt --all -- --check     # Check formatting (CI enforces this)
-cargo fmt --all                # Auto-format code
-cargo clippy -- -D warnings    # Lint with all warnings as errors (CI enforces this)
+cargo build --release
+cargo test                                      # unit tests, no camera needed
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings       # CI runs this with --locked; every warning fails
+cargo +1.88.0 check --locked --all-targets      # MSRV check (rustup toolchain install 1.88.0 first)
 ```
 
-Debug logging via `RUST_LOG` environment variable. Accepted values:
-`trace`, `debug`, `info`, `warn`, `error`, `off`. Defaults to `warn`.
+`rust-toolchain.toml` pins the compiler for CI, releases and local builds; bump it in its own PR so new clippy findings are reviewed on their own. `rust-version` in Cargo.toml is the MSRV and is checked separately in CI.
 
-```powershell
-$env:RUST_LOG="trace"; cargo run -- list
-$env:RUST_LOG="debug"; cargo run -- set --camera 0 --property PowerlineFrequency --value 50Hz
-```
+Debug output: `$env:RUST_LOG="trace"; cargo run -- list` (levels only, no per-target filters; goes to stderr).
 
-## Architecture
+## Things the code cannot tell you
 
-Two source files with clear separation of concerns:
-
-- **`src/main.rs`** — CLI layer: argument parsing (clap derive), input validation, output formatting (text/JSON). Commands: `list`, `get`, `set`, `version`.
-- **`src/webcam.rs`** — DirectShow abstraction: COM initialization (RAII `ComGuard`), device enumeration, property querying/setting via `IAMVideoProcAmp` and `IAMCameraControl` interfaces.
-
-### Key Design Patterns
-
-- **ComGuard** — RAII wrapper ensuring `CoInitializeEx`/`CoUninitialize` pairing. All COM operations must occur within its scope.
-- **Dual property enums** — `VideoProcAmpProperty` (14 variants: Brightness, PowerlineFrequency, etc.) and `CameraControlProperty` (7 variants: Exposure, Focus, etc.) are separate types dispatched to different DirectShow interfaces.
-- **Generic property handler** — `get_properties()` uses compile-time polymorphism to handle both property types with a single template.
-- **Human-readable value formatting** — Round-trip parsing between user strings ("50Hz", "Auto", "On") and DirectShow i32 values via `format_property_value()`/`parse_property_value()`.
-- **IndexMap** for ordered output — Preserves property order in JSON serialization.
-
-### build.rs
-
-Embeds a Windows application manifest (amd64, asInvoker, Windows 10/11 compatibility, SegmentHeap) and version info from Cargo.toml using `winresource`.
+- **Verify against a real camera.** The unit tests cover parsing, validation and output; everything that touches COM is checked by hand with `cargo run -- list`, `get` and `set`. The `dialog` subcommand shows the driver's own property pages, which is the reference for what "correct" looks like. This machine has a Logitech C920 and an OBS virtual camera.
+- **Do not remove the re-bind in write verification.** After writing, `Device::read_back` opens a fresh handle on purpose. Some cameras (C920, PowerlineFrequency) report a written value through the same handle and drop it when the last handle closes; only a fresh handle reveals that. The UVC class driver stores the value in the device's registry parameters and applies it at the next device start, which is what `Device::stored_value` and `--restart-device` are for. Details and the experiments behind them are in TROUBLESHOOTING.md and the 0.4.0 changelog entry.
+- **Lint overrides use `#[expect(lint, reason = "...")]`**, never `#[allow]`. The lint set in Cargo.toml is Microsoft's Pragmatic Rust Guidelines set; `clippy.toml` whitelists a few proper nouns for `doc_markdown`.
+- **Every `unsafe` block wraps one FFI call and has a `// SAFETY:` comment**; clippy enforces the comment. No function is `unsafe fn`.
+- **Do not set `RUSTFLAGS` in CI.** It replaces the hardening flags in `.cargo/config.toml` (see the comments there for what they are and how to verify them with `dumpbin`).
+- **The manifest and version resource** are embedded by `build.rs`; the architecture comes from the build target.
 
 ## CI/CD
 
-- **ci.yml** — Runs on PRs/pushes to main/develop: fmt check, clippy, build, test, artifact upload; a CodeQL job (rust + actions) runs only after build/test pass.
-- **release.yml** — Triggered via `workflow_run` after CI succeeds on main: skips quietly if the version's tag already exists, otherwise builds the release binary, tags the CI-validated commit, generates SBOMs (SPDX + CycloneDX), attests, and creates the GitHub release. It does NOT push to main (branch protection rejects workflow pushes).
-- **auto-patch-bump.yml** — Auto-bumps patch version on Dependabot cargo PRs and adds changelog entry.
+All actions are pinned to commit SHAs; Dependabot refreshes the pins. Workflows: `ci.yml` (fmt, clippy, build, test, MSRV, outdated-lockfile warning, CodeQL after build), `audit.yml` (`cargo audit`, weekly too), `dependency-review.yml`, `release.yml` (release-plz, below), `claude.yml` (`@claude` mentions from owners, members and collaborators only).
 
-Branch protection on `main` (ruleset "Protect main") requires the "Build and Test" check; admins can bypass deliberately via the UI.
+`ci.yml` has no path filter on purpose: "Build and Test" is the required check on `main` (ruleset "Protect main"), so it must report on docs-only PRs. Admins can bypass via the UI.
 
-## Dependency Policy
+## Dependencies
 
-Dependabot is limited to security updates only (`open-pull-requests-limit: 0` in `.github/dependabot.yml`). Routine freshness is manual: when making changes to the repo for any other reason, also run `cargo update` and include the refreshed `Cargo.lock` in the same PR.
+Dependabot raises cargo PRs for security advisories only and refreshes GitHub Actions pins. Neither releases anything by itself. Routine freshness is manual: when changing the repo for another reason, run `cargo update` and include `Cargo.lock` in the same PR.
 
-## Release Process
+## Releases
 
-Version is in `Cargo.toml`. Merging to `main` with a new version triggers the release pipeline automatically once CI passes. The version must not already have a release tag, and CHANGELOG.md must be updated in the same PR that bumps the version (the pipeline no longer writes the changelog).
+release-plz (`release-plz.toml`, `.github/workflows/release.yml`) owns the version and CHANGELOG.md:
+
+1. Commit subjects are Conventional Commits and become the changelog. `feat` lands under Added and bumps the minor version; `fix` under Fixed; `perf`, `refactor` and `build` under Changed; `docs` under Documentation; `build(deps)` under Dependencies; `ci`, `test` and `style` are omitted. A `!` or `BREAKING CHANGE` bumps the major. With squash merges the PR title is the subject, so get the title right.
+2. After each merge to `main`, release-plz opens or updates one release PR (label `release`) with the version bump and the new changelog section, inserted directly under the file's preamble. It is opened with the `RELEASE_PLZ_TOKEN` fine-grained PAT (Contents and Pull requests read/write, this repo only) so CI runs on it; the token expires and must be renewed in the browser, there is no API for it. Never edit the version or CHANGELOG.md by hand in a feature PR.
+3. Merging the release PR tags `v<version>`, creates the GitHub release with that changelog section as its body, and uploads the attested `wincamcfg.exe` and SBOMs. The crate is not on crates.io (`publish = false`, `git_only = true`); the last release is read from the `v*` tags.

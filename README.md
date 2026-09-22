@@ -112,9 +112,19 @@ wincamcfg set --camera 0 --property Focus --value 0       # autofocus off, fixed
 
 The current mode is shown in square brackets by `get`, e.g. `Exposure: -5 [Manual]` or `Exposure: -6 [Auto]`. Only properties that advertise Auto support will show a mode tag.
 
+Every write is read back through a fresh handle. Some cameras (the Logitech C920, for one) keep the powerline frequency only while an application has them open; Windows' UVC driver still stores the value and applies it the next time the camera starts, and `set` tells you so: `set to 60Hz (stored by the driver and applied when the camera next starts ...)`. If a camera drops a write and nothing stores it, the command reports the value the device actually holds and exits with code 2. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+From an elevated prompt (which is how startup scripts and GPO usually run), add `--restart-device` to have `set` restart the camera when a value was only stored, so it takes effect immediately:
+
+```powershell
+wincamcfg set --camera 0 --property PowerlineFrequency --value 50Hz --restart-device
+```
+
+The restart takes a second or two and interrupts any application currently using that camera, which is why it is opt-in. Cameras that apply the value straight away are never restarted.
+
 ### Reset to defaults
 
-Restore factory settings:
+Restore factory settings. Properties that support Auto go back to Auto, as the Default button in the Windows dialog does:
 
 ```bash
 # Reset a specific property to default
@@ -126,6 +136,18 @@ wincamcfg set --camera 0 --property all --default
 # Reset ALL cameras to factory defaults
 wincamcfg set --camera all --property all --default
 ```
+
+With `--camera all`, a device that does not support the requested property (a virtual camera, say) is skipped with a notice; with a specific index it is an error.
+
+### Open the driver's own dialog
+
+To see exactly what Windows shows for a camera (the same "Video Proc Amp" and "Camera Control" pages OBS Studio opens under *Configure Video*), open the driver's property dialog for one camera:
+
+```bash
+wincamcfg dialog --camera 0
+```
+
+The command blocks until the dialog is closed. Changes made there are written by the driver's own page; use `get` afterwards to confirm them.
 
 ## Available properties
 
@@ -139,7 +161,10 @@ wincamcfg set --camera all --property all --default
 - `WhiteBalance` - White balance (Auto or manual value)
 - `BacklightCompensation` - Backlight compensation (On/Off)
 - `Gain` - Gain/ISO control
-- `colourEnable` - Enable/disable colour (On/Off)
+- `ColorEnable` - Enable/disable colour (On/Off)
+- `Exposure`, `Focus`, `Zoom`, `Pan`, `Tilt`, `Roll`, `Iris` - Camera control properties (Auto or manual value where supported)
+
+Property names are matched case-insensitively.
 
 Use `wincamcfg get --camera 0` to see which properties your specific camera supports.
 
@@ -154,10 +179,22 @@ wincamcfg set --camera all --property PowerlineFrequency --value 50Hz --output j
 
 Drop this into a startup script or GPO if you need every machine on a fleet to land on the same camera config.
 
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Usage error, or the camera enumeration itself failed |
+| 2 | `set` ran, but at least one property write failed (see the output for which) |
+
+Diagnostics go to stderr, so `--output json` on stdout stays parseable even with `RUST_LOG` set.
+
 ## Requirements
 
-- Windows (uses DirectShow APIs)
-- Rust 2024 edition or later (for building from source)
+- Windows 10 or 11 (uses DirectShow APIs)
+- To build from source: Rust 1.88 or later (`rust-version` in `Cargo.toml`). `rust-toolchain.toml` pins the exact compiler that CI and releases use; `rustup` picks it up automatically.
+
+Check the installed version with `wincamcfg --version`.
 
 ## Release verification
 
@@ -187,6 +224,10 @@ Having issues? Check out the [Troubleshooting Guide](TROUBLESHOOTING.md) for deb
 
 MIT. See [LICENSE](LICENSE).
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
+
 ## Contributing
 
-Bug reports and PRs welcome. For bugs, please include a reproduction case: camera model, the exact command you ran, and a trace log if you can get one. [TROUBLESHOOTING.md](TROUBLESHOOTING.md) covers how to capture the log.
+Bug reports and PRs welcome. Before opening a PR run `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings` and `cargo test`; CI enforces all three. For bugs, please include a reproduction case: camera model, the exact command you ran, and a trace log if you can get one. [TROUBLESHOOTING.md](TROUBLESHOOTING.md) covers how to capture the log.
