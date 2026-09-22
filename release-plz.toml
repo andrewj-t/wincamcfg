@@ -28,16 +28,13 @@ pr_labels = ["release"]
 pr_name = "chore(release): v{{ version }}"
 
 [changelog]
-# Must match the top of CHANGELOG.md; new sections are inserted right after
-# "## [Unreleased]".
+# Must match the top of CHANGELOG.md; new sections are inserted right after it.
 header = """# Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
 """
 
 # Keep a Changelog section per release. Group names carry a hidden sort key

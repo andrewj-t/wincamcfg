@@ -1,13 +1,30 @@
-# Enable Control Flow Guard (CFG) on MSVC targets so the shipped binary
-# participates in Windows' indirect-call protection.
+# Windows binary hardening for MSVC targets.
+#
+# - control-flow-guard: Control Flow Guard (CFG), indirect-call protection.
+# - /CETCOMPAT: marks the image compatible with hardware-enforced stack
+#   protection (Intel CET / AMD shadow stacks); Windows then terminates the
+#   process on a corrupted return address where the CPU supports it.
+# - /DEPENDENTLOADFLAG:0x800: resolve the executable's static imports from
+#   System32 only, so a DLL dropped next to the executable cannot be picked up
+#   first (every import here is a system DLL).
 #
 # Caveats:
 # - A user-set RUSTFLAGS environment variable REPLACES these flags entirely,
 #   so CI must not export RUSTFLAGS.
 # - The prebuilt standard library is not CFG-instrumented; protection covers
 #   this crate and its dependencies. Full coverage would need -Zbuild-std.
+# - Verify with `dumpbin /headers` (DLL characteristics) and
+#   `dumpbin /loadconfig` (CET compatible, Dependent Load Flag).
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "control-flow-guard"]
+rustflags = [
+    "-C", "control-flow-guard",
+    "-C", "link-arg=/CETCOMPAT",
+    "-C", "link-arg=/DEPENDENTLOADFLAG:0x800",
+]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "control-flow-guard"]
+rustflags = [
+    "-C", "control-flow-guard",
+    "-C", "link-arg=/CETCOMPAT",
+    "-C", "link-arg=/DEPENDENTLOADFLAG:0x800",
+]

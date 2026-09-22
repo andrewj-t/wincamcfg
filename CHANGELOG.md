@@ -5,47 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
 ## [0.4.0] - 2026-09-22
 
+A cleanup of the whole project. It fixes several real bugs in `set`, makes the tool honest about what happened to a write, tightens the build and the CI pipeline, and hands releases to release-plz. It also settles something that came up during testing: on some cameras a powerline frequency write seems to vanish. It does not. See "Writes that take effect later" below.
+
 ### Added
-- `wincamcfg --version` flag (the `version` subcommand remains).
-- `set --restart-device` (elevated prompt only) restarts the camera when the driver merely stored a value for the next device start, so the setting takes effect immediately; results then read `applied after restarting the device`.
-- `wincamcfg dialog --camera N` opens the driver's own property dialog (the pages OBS Studio shows under *Configure Video*) for visual confirmation of what `get` reports.
-- `get` shows `Range: min..max` (and the step when it is not 1) for numeric properties and adds `min`, `max` and `step` to the JSON output.
-- Every write is read back through a fresh device handle. A value the camera drops when the handle closes (the Logitech C920 does this for PowerlineFrequency) is reported as "stored by the driver and applied when the camera next starts" when the Windows UVC driver has recorded it, and as a failure with the value the device actually holds otherwise, instead of a false success. `set` results gain an optional `note` field.
-- Exit codes: 0 success, 1 usage or enumeration error, 2 when `set` completed but at least one property write failed. Previously `set` always exited 0.
-- Hardware-free unit tests for value parsing and formatting, mode reporting, range and capability validation, camera selection and CLI parsing. CI's `cargo test` step was previously a no-op.
-- `SECURITY.md` with a private disclosure channel.
-- Control Flow Guard is enabled for MSVC builds via `.cargo/config.toml`.
-- `rust-toolchain.toml` pins the compiler used by CI, releases and local builds; `rust-version` (1.88) declares the MSRV and CI checks it.
-- Weekly `cargo audit` workflow so advisories against unchanged dependencies are caught.
+- `set` reads every write back through a fresh handle. If the camera drops a value once nothing has it open (a Logitech C920 does this for PowerlineFrequency), the result says so instead of claiming success. The Windows UVC driver still stores the value and applies it when the camera next starts, and the message tells you that: `stored by the driver and applied when the camera next starts (reconnect it or reboot)`. JSON results carry the same text in a `note` field.
+- `set --restart-device` restarts the camera when a value was only stored, so it takes effect at once. It needs an elevated prompt and interrupts anything using the camera, which is why it is opt in.
+- `dialog --camera N` opens the driver's own property pages, the same window OBS shows under Configure Video. Useful for checking what the tool reports against what Windows shows.
+- `get` prints the range of numeric properties (`Range: 0..255`, plus the step when it is not 1), and JSON output includes `min`, `max` and `step`.
+- Exit codes that mean something: 0 when everything worked, 1 for a usage or enumeration error, 2 when `set` ran but at least one write failed. Until now `set` exited 0 no matter what.
+- `wincamcfg --version`.
+- 28 unit tests that run without a camera. CI ran `cargo test` before this release, against an empty suite.
+- `SECURITY.md`, so there is a private way to report a vulnerability.
+- Hardening flags for MSVC builds in `.cargo/config.toml`: Control Flow Guard, CET shadow stack compatibility, and a dependent load flag that makes the loader take the executable's imports from System32 only.
+- `rust-toolchain.toml` pins the compiler (1.97.1). `rust-version` declares the oldest supported one (1.88) and CI checks it.
+- A weekly `cargo audit` run, so an advisory against a dependency that has not changed still gets noticed.
 
 ### Changed
-- `--value Auto` on `PowerlineFrequency` now selects the driver's Auto value (3) instead of writing 0 with the Auto flag.
-- Property names are matched case-insensitively throughout (`--property brightness` used to fail after being found).
-- `--default` writes the device's numeric default directly instead of round-tripping through a display string, and switches properties that support Auto back to Auto, matching the Default button of the Windows property dialog. The `value` field of `set` results shows what was sent, e.g. `4000 [Auto]`.
-- Requesting Auto on a property that does not advertise Auto capability is rejected up front; manual values are range-checked before the driver is called. Auto writes keep the current value instead of sending 0.
-- `--camera all` skips devices that lack the requested property (with a notice) instead of aborting on the first virtual camera; a specific camera index still reports an error.
-- `list` only reads device names and paths; it no longer binds every device's filter and queries every property.
-- Properties are listed in the order of the standard DirectShow property dialog's tabs (Brightness, Contrast, Hue, Saturation, Sharpness, Gamma, WhiteBalance, BacklightCompensation, Gain, ColorEnable, PowerlineFrequency; Zoom, Focus, Exposure, Iris, Pan, Tilt, Roll).
-- Logs go to stderr, so `--output json` stays machine-readable with `RUST_LOG` set. An unparseable `RUST_LOG` value prints a warning instead of silently falling back to `warn`.
-- A property whose current value cannot be read is shown as `<unavailable>` instead of `0`.
-- `set` reports the canonical label (`50Hz`, `Auto`) in its `value` field rather than the raw text typed by the user.
-- One COM session and one enumeration per command instead of re-initialising COM and re-enumerating for every property write. Every `unsafe` block is now narrowed to the FFI call and documented.
-- Adopted the Microsoft Pragmatic Rust Guidelines lint set (`[lints]` in `Cargo.toml`); CI runs clippy with `--all-targets` and `--locked`.
-- `windows` crate pinned to 0.62 (was a `>=0.59, <=0.62` range); `tracing-subscriber` trimmed to `fmt` + `std`; release profile uses fat LTO, `panic = "abort"`, stripped symbols and overflow checks.
-- `build.rs` derives the manifest architecture from the build target (arm64 builds no longer claim amd64).
-- CI: every GitHub Action pinned to a commit SHA, least-privilege permissions per job, credential-free checkouts, no PR-writable build cache in release builds, `cargo-sbom` pinned. Dependabot now refreshes action pins.
-- Releases are driven by release-plz: every merge to `main` updates a single release PR (version bump plus generated changelog section from Conventional Commit messages), and merging that PR tags, creates the GitHub release and uploads the attested binary and SBOMs. This replaces the `workflow_run` release chain and the Dependabot auto-patch-bump job, so dependency updates no longer release on their own.
-- `CHANGELOG.md` header restored to the top of the file and a duplicated 0.2.11 entry removed.
+- `--value Auto` on PowerlineFrequency picks the driver's Auto setting (value 3). It used to write 0 with the Auto flag, which is not the same thing.
+- Property names match regardless of case everywhere. `--property brightness` used to find the property and then fail on it.
+- `--default` sends the numeric default straight to the driver and, for properties that can run in Auto, switches Auto back on. That is what the Default button in the Windows dialog does. The old code left them in Manual.
+- Values are checked against the reported range and capabilities before the driver is called, so an out of range value, or Auto on a property that only does Manual, fails with a clear message. An Auto write keeps the current value instead of sending 0.
+- With `--camera all`, a device that lacks the property is skipped with a notice. Before, the first virtual camera without it aborted the whole command.
+- `list` reads only names and paths. It no longer opens every device and queries every property.
+- Properties are listed in the same order as the tabs of the Windows dialog.
+- Logs go to stderr, so `--output json` stays parseable with `RUST_LOG` set. A misspelt `RUST_LOG` value prints a warning instead of quietly falling back to `warn`.
+- A property whose current value cannot be read shows `<unavailable>` rather than `0`.
+- `set` reports what it sent (`50Hz`, `4000 [Auto]`) rather than echoing what you typed.
+- One COM session per command. The old code initialised COM and enumerated every device again for each property it wrote, up to 21 times for `--property all`.
+- Every `unsafe` block wraps a single call into Windows and carries a comment saying why it is sound. Clippy enforces this.
+- The Microsoft Pragmatic Rust Guidelines lint set is on, and CI runs clippy with `--all-targets --locked`.
+- The `windows` crate is pinned to 0.62 instead of a range spanning four incompatible versions. `tracing-subscriber` is trimmed to what is used. The release profile uses fat LTO, aborts on panic, strips symbols and keeps overflow checks on.
+- `build.rs` takes the manifest architecture from the build target, so an arm64 build no longer claims to be amd64 (if arm64 support were added in the future).
+- CI: every GitHub Action is pinned to a commit SHA, each job has only the permissions it needs, checkouts keep credentials only when they push, `cargo` runs with `--locked`, release builds no longer restore a cache that pull requests can write to, and `cargo-sbom` is pinned. Dependabot now refreshes the action pins.
+- Releases are driven by release-plz. Each merge to `main` updates a release pull request with the next version and a changelog section generated from commit messages; merging it tags, publishes the release and uploads the attested binary and SBOMs. The old `workflow_run` chain and the Dependabot auto patch bump are gone, so a dependency update no longer produces a release on its own.
+- The changelog header is back at the top of this file and a duplicated 0.2.11 entry is gone.
 
 ### Removed
-- Stale branches `chore/trim-deps` (already merged as 0.3.0), `refactor/ms-rust-guidelines` and `feature/trait-based-mocking` (their useful parts are re-implemented here; the mocking trait had no production implementor).
-
-### Notes
-- `0.3.1` appears in this changelog but was never tagged or released.
+- The `version` subcommand. Use `--version`.
+- Three stale branches: `chore/trim-deps` (already merged in 0.3.0), `refactor/ms-rust-guidelines` and `feature/trait-based-mocking`. The parts worth keeping are reimplemented here; the mocking trait had nothing real implementing it.
 
 ## [0.3.2] - 2026-07-03
 

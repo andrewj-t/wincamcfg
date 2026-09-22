@@ -81,3 +81,19 @@ Trace logging (`RUST_LOG=trace`) shows the exact value and flags sent and the va
 ### `--default` and Auto mode
 
 `--default` restores the driver's default value and, for properties that support Auto, switches them back to Auto. This matches the Default button of the standard property dialog. To pin a property at its default value in manual mode instead, pass the value explicitly, e.g. `--value 4000`.
+
+## Reporting issues
+
+When reporting an issue, please include:
+
+1. Version, from `wincamcfg --version`
+2. Camera model, from `wincamcfg get --camera <CAMERA>`
+3. Trace log of the failing command:
+
+   ```powershell
+   $env:RUST_LOG="trace"; wincamcfg [your command] 2> debug.log
+   ```
+
+4. Windows version and anything else about the system that seems relevant
+
+Attach the `debug.log` file to the issue.

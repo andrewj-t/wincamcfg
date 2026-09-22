@@ -1,6 +1,6 @@
 //! wincamcfg: command-line control of webcam properties on Windows.
 //!
-//! The binary has four subcommands (`list`, `get`, `set`, `version`) and two
+//! The binary has four subcommands (`list`, `get`, `set`, `dialog`) and two
 //! output formats (text and JSON). All DirectShow work lives in [`webcam`];
 //! this file only parses arguments, formats output and maps results to exit
 //! codes.
@@ -118,9 +118,6 @@ enum Commands {
         #[arg(short, long)]
         camera: String,
     },
-
-    /// Show version information
-    Version,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -252,7 +249,6 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<Outcome> {
         } => list_devices(include_device_path, output, out)?,
         Commands::Get { camera, output } => get_device_properties(&camera, output, out)?,
         Commands::Dialog { camera } => open_dialog(&camera, out)?,
-        Commands::Version => writeln!(out, "wincamcfg {}", env!("CARGO_PKG_VERSION"))?,
         Commands::Set {
             camera,
             property,

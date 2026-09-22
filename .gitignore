@@ -25,3 +25,6 @@ target
 
 # Local scratch files (not tracked)
 temp/
+
+# Claude Code local settings
+.claude/

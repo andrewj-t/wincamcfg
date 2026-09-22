@@ -14,7 +14,7 @@ You can expect an acknowledgement within a week. Confirmed issues are fixed in a
 
 ## What is in scope
 
-wincamcfg is a local command-line tool that talks to webcam drivers through DirectShow. It opens no network connections, reads no configuration files, and runs with the privileges of the user who launches it. Reports about the handling of command-line input, COM/DirectShow interop, the build and release pipeline (including the published SBOMs and attestations), and dependencies are all welcome.
+wincamcfg is a local command-line tool that talks to webcam drivers through DirectShow. It opens no network connections and reads no configuration files. Its only registry access is reading a camera's `Device Parameters` key, which is world-readable. It runs with the privileges of the user who launches it and never asks for elevation; the one privileged operation, `set --restart-device`, refuses to run unless the process is already elevated. Reports about the handling of command-line input, COM/DirectShow interop, the device restart path, the build and release pipeline (including the published SBOMs and attestations), and dependencies are all welcome.
 
 ## Verifying releases
 
