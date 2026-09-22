@@ -149,6 +149,9 @@ struct PropertyOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
     default: String,
+    min: i32,
+    max: i32,
+    step: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     supported_values: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -468,6 +471,9 @@ fn build_device_output(idx: usize, device: &webcam::DeviceInfo) -> DeviceOutput<
                         .and_then(|c| webcam::current_mode(prop.caps, c.flags))
                         .map(|m| m.to_string()),
                     default: webcam::format_property_value(&prop.name, prop.default),
+                    min: prop.min,
+                    max: prop.max,
+                    step: prop.step,
                     supported_values: webcam::build_enum_display(&prop.name, prop.min, prop.max),
                     modes_supported: webcam::format_capabilities(prop.caps),
                 },
@@ -501,7 +507,11 @@ fn render_text(outputs: &[DeviceOutput], out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// Formats one property as `value [mode] (Supported: ..., Modes: ..., Default: ...)`.
+/// Formats one property as `value [mode] (Range: ..., Modes: ..., Default: ...)`.
+///
+/// Enum-like properties list their labels under `Supported:` instead of a
+/// numeric range, mirroring the drop-down versus slider split in the standard
+/// DirectShow property dialog. The step is shown only when it is not 1.
 fn format_property_line(prop: &PropertyOutput) -> String {
     let Some(current) = &prop.value else {
         return "<unavailable>".to_owned();
@@ -513,9 +523,15 @@ fn format_property_line(prop: &PropertyOutput) -> String {
         let _ = write!(line, " [{mode}]");
     }
 
-    let mut meta = Vec::with_capacity(3);
+    let mut meta = Vec::with_capacity(4);
     if let Some(supported) = &prop.supported_values {
         meta.push(format!("Supported: {supported}"));
+    } else {
+        let mut range = format!("Range: {}..{}", prop.min, prop.max);
+        if prop.step > 1 {
+            let _ = write!(range, " step {}", prop.step);
+        }
+        meta.push(range);
     }
     if let Some(modes) = &prop.modes_supported
         && modes.contains(',')
@@ -631,6 +647,56 @@ mod tests {
         );
         assert_eq!(display_value("Brightness", ParsedValue::Manual(128)), "128");
         assert_eq!(display_value("Focus", ParsedValue::Auto), "Auto");
+    }
+
+    fn output(
+        value: Option<&str>,
+        min: i32,
+        max: i32,
+        step: i32,
+        supported: Option<&str>,
+    ) -> PropertyOutput {
+        PropertyOutput {
+            value: value.map(str::to_owned),
+            mode: None,
+            default: "1".to_owned(),
+            min,
+            max,
+            step,
+            supported_values: supported.map(str::to_owned),
+            modes_supported: None,
+        }
+    }
+
+    #[test]
+    fn property_line_shows_numeric_range_and_step() {
+        assert_eq!(
+            format_property_line(&output(Some("128"), 0, 255, 1, None)),
+            "128 (Range: 0..255, Default: 1)"
+        );
+        assert_eq!(
+            format_property_line(&output(Some("100"), 100, 500, 10, None)),
+            "100 (Range: 100..500 step 10, Default: 1)"
+        );
+        assert_eq!(
+            format_property_line(&output(Some("-5"), -11, -1, 1, None)),
+            "-5 (Range: -11..-1, Default: 1)"
+        );
+    }
+
+    #[test]
+    fn property_line_prefers_labels_over_range_for_enum_properties() {
+        let line = format_property_line(&output(Some("50Hz"), 1, 2, 1, Some("50Hz (1), 60Hz (2)")));
+        assert_eq!(line, "50Hz (Supported: 50Hz (1), 60Hz (2), Default: 1)");
+        assert!(!line.contains("Range"));
+    }
+
+    #[test]
+    fn property_line_marks_unreadable_values() {
+        assert_eq!(
+            format_property_line(&output(None, 0, 255, 1, None)),
+            "<unavailable>"
+        );
     }
 
     #[test]

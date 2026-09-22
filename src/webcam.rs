@@ -138,20 +138,22 @@ pub(crate) enum VideoProcAmpProperty {
 impl VideoProcAmpProperty {
     /// Every variant, in the order properties are queried and displayed.
     ///
-    /// This order is part of the user-visible output, so keep it stable.
+    /// Matches the "Video Proc Amp" tab of the standard DirectShow property
+    /// dialog, followed by the properties that dialog does not show. This
+    /// order is part of the user-visible output, so keep it stable.
     pub(crate) const ALL: [Self; 14] = [
         Self::Brightness,
         Self::Contrast,
-        Self::Saturation,
         Self::Hue,
-        Self::WhiteBalance,
-        Self::WhiteBalanceComponent,
-        Self::ColorEnable,
-        Self::Gamma,
+        Self::Saturation,
         Self::Sharpness,
+        Self::Gamma,
+        Self::WhiteBalance,
         Self::BacklightCompensation,
         Self::Gain,
+        Self::ColorEnable,
         Self::PowerlineFrequency,
+        Self::WhiteBalanceComponent,
         Self::DigitalMultiplier,
         Self::DigitalMultiplierLimit,
     ];
@@ -216,15 +218,16 @@ pub(crate) enum CameraControlProperty {
 impl CameraControlProperty {
     /// Every variant, in the order properties are queried and displayed.
     ///
-    /// This order is part of the user-visible output, so keep it stable.
+    /// Matches the "Camera Control" tab of the standard DirectShow property
+    /// dialog. This order is part of the user-visible output, so keep it stable.
     pub(crate) const ALL: [Self; 7] = [
-        Self::Exposure,
+        Self::Zoom,
         Self::Focus,
+        Self::Exposure,
+        Self::Iris,
         Self::Pan,
         Self::Tilt,
         Self::Roll,
-        Self::Zoom,
-        Self::Iris,
     ];
 
     /// Canonical name, as shown in output and accepted (case-insensitively) on input.
