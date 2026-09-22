@@ -2,12 +2,15 @@
 #
 # - cargo: security advisories only (open-pull-requests-limit: 0 disables
 #   version updates). Routine freshness is manual: run `cargo update` when
-#   making other changes anyway. Security PRs get an automatic patch bump
-#   (auto-patch-bump.yml) and therefore produce a release when merged.
+#   making other changes anyway.
 # - github-actions: version updates ARE enabled so the commit-SHA pins in
-#   .github/workflows stay current. These PRs do not bump the crate version,
-#   and release.yml skips when the version tag already exists, so merging
-#   them never produces a release.
+#   .github/workflows stay current.
+#
+# Neither kind of PR releases anything by itself. Merged updates accumulate
+# in the release PR that release-plz maintains (see release-plz.toml) and
+# ship when that PR is merged. The commit-message prefixes below are
+# Conventional Commit types that release-plz uses to sort the changelog:
+# dependency bumps land under "Dependencies", CI pin refreshes are omitted.
 version: 2
 updates:
   - package-ecosystem: "cargo"
@@ -15,6 +18,8 @@ updates:
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 0
+    commit-message:
+      prefix: "build(deps)"
     groups:
       security-updates:
         applies-to: security-updates
@@ -25,6 +30,8 @@ updates:
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
     groups:
       actions:
         patterns:

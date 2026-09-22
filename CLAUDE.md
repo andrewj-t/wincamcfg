@@ -64,16 +64,21 @@ All GitHub Actions are pinned to full commit SHAs with a version comment; Depend
 - **ci.yml** — Runs on every PR and push to main: fmt check, clippy (`--all-targets --locked`), build, test, artifact upload, an MSRV check on 1.88.0, an outdated-lockfile warning on PRs, and a CodeQL job (rust + actions) that runs only after build/test pass. There is deliberately no path filter: "Build and Test" is a required check, so it must report on docs-only PRs too.
 - **audit.yml** — `cargo audit` on manifest changes, pushes to main and weekly on a schedule.
 - **dependency-review.yml** — GitHub dependency review on PRs, failing on moderate severity.
-- **release.yml** — Triggered via `workflow_run` after CI succeeds on main: skips quietly if the version's tag already exists, otherwise builds the release binary from a clean (uncached) build, tags the CI-validated commit, generates SBOMs (SPDX + CycloneDX), attests, and creates the GitHub release. Only the publish job has write/OIDC permissions. It does NOT push to main (branch protection rejects workflow pushes).
-- **auto-patch-bump.yml** — Auto-bumps the patch version on Dependabot **cargo** PRs (security updates) and inserts a changelog entry under the header. GitHub Actions pin refreshes are excluded on purpose.
+- **release.yml** — release-plz, on every push to main. `release-plz-pr` opens or updates the single release PR (version bump + changelog section generated from Conventional Commit messages). `release-plz-release` tags `v<version>` and creates the GitHub release when Cargo.toml's version has no tag yet (i.e. the release PR was merged). `publish-binary` then builds the tagged commit on Windows from a clean build, generates SBOMs, attests everything and uploads the assets to that release. Only the jobs that need them hold write/OIDC permissions.
 - **claude.yml** — `@claude` mentions from owners, members and collaborators only.
 
 Branch protection on `main` (ruleset "Protect main") requires the "Build and Test" check; admins can bypass deliberately via the UI.
 
 ## Dependency Policy
 
-Dependabot raises cargo PRs for security advisories only (`open-pull-requests-limit: 0` for version updates in `.github/dependabot.yml`); those get an automatic patch bump and therefore release when merged. Dependabot also refreshes GitHub Actions pins; those PRs carry no version bump and never release. Routine crate freshness is manual: when making changes to the repo for any other reason, also run `cargo update` and include the refreshed `Cargo.lock` in the same PR.
+Dependabot raises cargo PRs for security advisories only (`open-pull-requests-limit: 0` for version updates in `.github/dependabot.yml`) and refreshes GitHub Actions pins. Neither releases anything on its own: merged updates accumulate in the release PR and ship with the next release. Routine crate freshness is manual: when making changes to the repo for any other reason, also run `cargo update` and include the refreshed `Cargo.lock` in the same PR.
 
 ## Release Process
 
-Version is in `Cargo.toml`. Merging to `main` with a new version triggers the release pipeline automatically once CI passes. The version must not already have a release tag, and CHANGELOG.md must be updated in the same PR that bumps the version (the pipeline does not write the changelog). Keep the `# Changelog` header at the top of the file; new entries go directly beneath the preamble.
+Releases are managed by [release-plz](https://release-plz.dev) (`release-plz.toml`, `.github/workflows/release.yml`):
+
+1. Write Conventional Commit subjects (`feat:`, `fix:`, `refactor:`, `docs:`, `build(deps):`, `ci:` ...). They become the changelog: `feat` lands under Added, `fix` under Fixed, `perf`/`refactor`/`build` under Changed, `docs` under Documentation, dependency bumps under Dependencies; `ci`, `test` and `style` are omitted. A `feat` bumps the minor version, anything else the patch, a `!`/`BREAKING CHANGE` the major.
+2. After each merge to main, release-plz updates the release PR (labelled `release`). Review it like any other PR; CI runs on it because it is opened with the `RELEASE_PLZ_TOKEN` personal access token (fine-grained, this repo only, Contents and Pull requests read/write). Do not edit Cargo.toml's version or CHANGELOG.md by hand in feature PRs; the bot owns both. Keep `## [Unreleased]` directly under the CHANGELOG preamble, that is where new sections are inserted.
+3. Merging the release PR tags the commit, creates the GitHub release with the changelog section as its body, and uploads the attested `wincamcfg.exe` and SBOMs.
+
+The crate is not published to crates.io (`publish = false`, `git_only = true`); the last released version is read from the `v*` tags.

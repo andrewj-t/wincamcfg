@@ -1,22 +1,32 @@
 name: Release
 
-# Least privilege: only the publish job gets write and OIDC permissions.
-permissions:
-  contents: read
+# Release PR bot (release-plz). See release-plz.toml for the overview.
+#
+# Every push to main:
+#   release-plz-pr       opens/updates the release PR (version bump + changelog)
+#   release-plz-release  if Cargo.toml's version has no tag yet (a merged release
+#                        PR), tags it and creates the GitHub release
+#   publish-binary       builds, attests and uploads the Windows binary + SBOMs
+#                        to that release
+#
+# Token: the release PR must trigger CI, and pull requests opened with the
+# default GITHUB_TOKEN never trigger workflows. Add a fine-grained personal
+# access token as the RELEASE_PLZ_TOKEN secret (repository access: this repo;
+# permissions: Contents read/write, Pull requests read/write). Without it the
+# job falls back to GITHUB_TOKEN and the release PR shows "waiting for
+# status" until it is closed and reopened by hand.
 
-# Serialize releases; never cancel one in flight.
+permissions: {}
+
+on:
+  push:
+    branches:
+      - main
+
+# Never run two releases at once, and never cancel one in flight.
 concurrency:
   group: release
   cancel-in-progress: false
-
-# Runs after CI succeeds on main, so a broken build never starts the release
-# machinery. Skips quietly when the current version has already been released,
-# which is also why merging a dependency-pin refresh never produces a release.
-on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,56 +35,96 @@ env:
   CARGO_SBOM_VERSION: 0.10.0
 
 jobs:
-  prepare:
-    name: Check Release Needed
-    if: github.event.workflow_run.conclusion == 'success'
+  release-plz-release:
+    name: Tag and create release
+    if: github.repository_owner == 'andrewj-t'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
-      version: ${{ steps.version.outputs.VERSION }}
-      release_needed: ${{ steps.decide.outputs.RELEASE_NEEDED }}
+      releases_created: ${{ steps.release-plz.outputs.releases_created }}
+      releases: ${{ steps.release-plz.outputs.releases }}
 
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        ref: ${{ github.event.workflow_run.head_sha }}
         fetch-depth: 0
         persist-credentials: false
 
-    - name: Get version from Cargo.toml
-      id: version
-      shell: bash
-      run: |
-        VERSION=$(grep '^version = ' Cargo.toml | head -n 1 | sed 's/version = "\(.*\)"/\1/')
-        echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
-        echo "Version: $VERSION"
+    - name: Install Rust toolchain
+      run: rustup toolchain install
 
-    - name: Decide whether to release
-      id: decide
-      shell: bash
+    - name: Run release-plz release
+      id: release-plz
+      uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+      with:
+        command: release
       env:
-        VERSION: ${{ steps.version.outputs.VERSION }}
-      run: |
-        TAG="v${VERSION}"
-        if [ -n "$(git tag -l "$TAG")" ]; then
-          echo "RELEASE_NEEDED=false" >> "$GITHUB_OUTPUT"
-          echo ":fast_forward: Tag $TAG already exists — nothing to release." >> "$GITHUB_STEP_SUMMARY"
-        else
-          echo "RELEASE_NEEDED=true" >> "$GITHUB_OUTPUT"
-          echo ":rocket: Tag $TAG does not exist — releasing." >> "$GITHUB_STEP_SUMMARY"
-        fi
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build:
-    name: Build Release Binary
-    needs: prepare
-    if: needs.prepare.outputs.release_needed == 'true'
-    runs-on: windows-latest
+  release-plz-pr:
+    name: Open or update release PR
+    if: github.repository_owner == 'andrewj-t'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
 
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        ref: ${{ github.event.workflow_run.head_sha }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Install Rust toolchain
+      run: rustup toolchain install
+
+    - name: Run release-plz release-pr
+      uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+      with:
+        command: release-pr
+      env:
+        GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+  publish-binary:
+    name: Build, attest and upload binary
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.releases_created == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+    # The action's `releases` output is the JSON printed by
+    # `release-plz release`; tolerate both the bare array and the wrapped
+    # object form.
+    - name: Resolve release tag
+      id: tag
+      shell: bash
+      env:
+        RELEASES: ${{ needs.release-plz-release.outputs.releases }}
+      run: |
+        TAG=$(jq -r 'if type == "array" then .[0].tag else .releases[0].tag end' <<< "$RELEASES")
+        if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+          echo "::error::Could not determine the release tag from: $RELEASES"
+          exit 1
+        fi
+        echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+        echo "Releasing $TAG"
+
+    # Build exactly the tagged commit, from a clean (uncached) build directory,
+    # so the attested binary is reproducible from the tag alone.
+    - name: Checkout tagged commit
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ steps.tag.outputs.TAG }}
         persist-credentials: false
 
     - name: Install Rust toolchain
@@ -82,9 +132,6 @@ jobs:
         rustup toolchain install
         rustup show active-toolchain
 
-    # Only the registry is cached. The build directory is deliberately not
-    # restored: the released, attested binary must come from a clean build,
-    # not from a cache that pull-request jobs can write to.
     - name: Cache cargo registry
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -96,95 +143,37 @@ jobs:
     - name: Build release binary
       run: cargo build --release --locked
 
-    - name: Upload binary artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with:
-        name: release-binary
-        path: target/release/wincamcfg.exe
-
-  publish:
-    name: Tag, SBOM, and Release
-    needs: [prepare, build]
-    if: needs.prepare.outputs.release_needed == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-
-    steps:
-    # CHANGELOG.md is maintained in the PR that bumps the version (branch
-    # protection on main rejects direct pushes from the workflow token).
-    # Credentials are kept on this checkout because it pushes the tag.
-    - name: Checkout code
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        ref: ${{ github.event.workflow_run.head_sha }}
-
-    - name: Configure Git
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-
-    - name: Create and push git tag
-      env:
-        VERSION: ${{ needs.prepare.outputs.version }}
-      run: |
-        git tag -a "v${VERSION}" -m "Release v${VERSION}"
-        git push origin "v${VERSION}"
-
-    - name: Install Rust toolchain
-      run: rustup toolchain install
-
-    - name: Cache cargo registry
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
     - name: Install cargo-sbom
+      shell: bash
       run: cargo install cargo-sbom --version "$CARGO_SBOM_VERSION" --locked
 
-    - name: Generate SBOM (SPDX)
-      run: cargo sbom --output-format spdx_json_2_3 > sbom.spdx.json
+    - name: Generate SBOMs
+      shell: bash
+      run: |
+        cargo sbom --output-format spdx_json_2_3 > sbom.spdx.json
+        cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cyclonedx.json
+        cp target/release/wincamcfg.exe wincamcfg.exe
 
-    - name: Generate SBOM (CycloneDX)
-      run: cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cyclonedx.json
-
-    - name: Download binary artifact
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-      with:
-        name: release-binary
-
-    - name: Generate artifact attestation
+    - name: Attest binary provenance
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
       with:
         subject-path: 'wincamcfg.exe'
 
-    - name: Generate SPDX SBOM attestation
+    - name: Attest SPDX SBOM
       uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
       with:
         subject-path: 'wincamcfg.exe'
         sbom-path: 'sbom.spdx.json'
 
-    - name: Generate CycloneDX SBOM attestation
+    - name: Attest CycloneDX SBOM
       uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
       with:
         subject-path: 'wincamcfg.exe'
         sbom-path: 'sbom.cyclonedx.json'
 
-    - name: Create Release
-      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-      with:
-        tag_name: v${{ needs.prepare.outputs.version }}
-        draft: false
-        prerelease: false
-        files: |
-          wincamcfg.exe
-          sbom.spdx.json
-          sbom.cyclonedx.json
-        generate_release_notes: true
+    - name: Upload assets to the release
+      shell: bash
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG: ${{ steps.tag.outputs.TAG }}
+      run: gh release upload "$TAG" wincamcfg.exe sbom.spdx.json sbom.cyclonedx.json --clobber

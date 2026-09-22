@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [0.4.0] - 2026-09-22
 
 ### Added
@@ -30,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adopted the Microsoft Pragmatic Rust Guidelines lint set (`[lints]` in `Cargo.toml`); CI runs clippy with `--all-targets` and `--locked`.
 - `windows` crate pinned to 0.62 (was a `>=0.59, <=0.62` range); `tracing-subscriber` trimmed to `fmt` + `std`; release profile uses fat LTO, `panic = "abort"`, stripped symbols and overflow checks.
 - `build.rs` derives the manifest architecture from the build target (arm64 builds no longer claim amd64).
-- CI: every GitHub Action pinned to a commit SHA, least-privilege permissions per job, credential-free checkouts, no PR-writable build cache in release builds, `cargo-sbom` pinned. Dependabot now refreshes action pins (these merges do not release).
+- CI: every GitHub Action pinned to a commit SHA, least-privilege permissions per job, credential-free checkouts, no PR-writable build cache in release builds, `cargo-sbom` pinned. Dependabot now refreshes action pins.
+- Releases are driven by release-plz: every merge to `main` updates a single release PR (version bump plus generated changelog section from Conventional Commit messages), and merging that PR tags, creates the GitHub release and uploads the attested binary and SBOMs. This replaces the `workflow_run` release chain and the Dependabot auto-patch-bump job, so dependency updates no longer release on their own.
 - `CHANGELOG.md` header restored to the top of the file and a duplicated 0.2.11 entry removed.
 
 ### Removed

@@ -1,0 +1,68 @@
+# release-plz configuration. See https://release-plz.dev/docs/config
+#
+# How releases work:
+# 1. Every push to main runs `release-plz release-pr`, which opens or updates
+#    a single "release PR" bumping Cargo.toml/Cargo.lock and adding a
+#    CHANGELOG.md section generated from Conventional Commit messages.
+# 2. Merging that PR runs `release-plz release`, which tags `v<version>` and
+#    creates the GitHub release (body = that changelog section).
+# 3. .github/workflows/release.yml then builds the Windows binary and SBOMs,
+#    attests them, and uploads them to the release.
+
+[workspace]
+# This crate is not on crates.io (publish = false): take the last released
+# version from git tags instead of a registry and never run `cargo publish`.
+git_only = true
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+git_release_body = "{{ changelog }}"
+# Binary crate with no public API, so cargo-semver-checks has nothing to check.
+semver_check = false
+# In 0.x, a `feat:` commit bumps the minor version (0.4.0 -> 0.5.0) instead of
+# the patch, so behaviour additions are visible in the version number.
+features_always_increment_minor = true
+# Keep the manual `cargo update` policy: the release PR only changes the
+# version and changelog, it does not refresh dependencies.
+dependencies_update = false
+pr_labels = ["release"]
+pr_name = "chore(release): v{{ version }}"
+
+[changelog]
+# Must match the top of CHANGELOG.md; new sections are inserted right after
+# "## [Unreleased]".
+header = """# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+"""
+
+# Keep a Changelog section per release. Group names carry a hidden sort key
+# (`<!-- n -->`) so sections appear in a fixed order; the template strips it.
+body = """## [{{ version }}]{%- if release_link -%}({{ release_link }}){% endif %} - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits | unique(attribute="message") %}
+- {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | upper_first }}{% if commit.scope and commit.scope != "deps" %} ({{ commit.scope }}){% endif %}{%- if commit.links %} ({% for link in commit.links %}[{{ link.text }}]({{ link.href }}){% if not loop.last %}, {% endif %}{% endfor %}){% endif %}
+{%- endfor %}
+{% endfor %}"""
+
+# Map Conventional Commit types to Keep a Changelog sections. Internal-only
+# work (CI, tests, formatting, the release commit itself) is left out of the
+# user-facing changelog.
+commit_parsers = [
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^(ci|test|style)", skip = true },
+  { message = "^(build|chore|fix)\\(deps\\)", group = "<!-- 5 -->Dependencies" },
+  { message = "^feat", group = "<!-- 0 -->Added" },
+  { message = "^fix", group = "<!-- 2 -->Fixed" },
+  { message = "^(perf|refactor|build)", group = "<!-- 1 -->Changed" },
+  { message = "^docs", group = "<!-- 3 -->Documentation" },
+  { message = "^chore", group = "<!-- 4 -->Other" },
+  { message = ".*", group = "<!-- 4 -->Other" },
+]
+# A breaking change is never dropped by a skip rule above.
+protect_breaking_commits = true
