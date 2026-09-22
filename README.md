@@ -129,6 +129,16 @@ wincamcfg set --camera all --property all --default
 
 With `--camera all`, a device that does not support the requested property (a virtual camera, say) is skipped with a notice; with a specific index it is an error.
 
+### Open the driver's own dialog
+
+To see exactly what Windows shows for a camera (the same "Video Proc Amp" and "Camera Control" pages OBS Studio opens under *Configure Video*), open the driver's property dialog for one camera:
+
+```bash
+wincamcfg dialog --camera 0
+```
+
+The command blocks until the dialog is closed. Changes made there are written by the driver's own page; use `get` afterwards to confirm them.
+
 ## Available properties
 
 - `PowerlineFrequency` - Fix flickering (Disabled, 50Hz, 60Hz, Auto)

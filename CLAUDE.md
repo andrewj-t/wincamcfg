@@ -35,7 +35,7 @@ Exit codes: 0 success, 1 usage/enumeration error, 2 when `set` ran but at least 
 
 Two source files with clear separation of concerns:
 
-- **`src/main.rs`** — CLI layer: argument parsing (clap derive), output formatting (text/JSON), exit-code mapping. Commands: `list`, `get`, `set`, `version`.
+- **`src/main.rs`** — CLI layer: argument parsing (clap derive), output formatting (text/JSON), exit-code mapping. Commands: `list`, `get`, `set`, `dialog`, `version`.
 - **`src/webcam.rs`** — DirectShow abstraction: COM session, device enumeration, property querying/setting via `IAMVideoProcAmp` and `IAMCameraControl`, value label parsing/formatting.
 
 ### Key Design Patterns
@@ -44,6 +44,7 @@ Two source files with clear separation of concerns:
 - **`Device<'com>`** — a bound capture device (holds an `IMoniker`) that borrows the session, so no COM interface can outlive `CoUninitialize`. `Device::info()` returns plain `DeviceInfo` data; `Device::set()` validates then writes.
 - **`PropertyControl` trait** — implemented for `IAMVideoProcAmp` and `IAMCameraControl`; one generic `query_properties` serves both. The Auto/Manual flag bits are identical for both interfaces (compile-time asserted) and centralised in `Mode`.
 - **Value parsing** — `parse_property_value` returns `ParsedValue::{Auto, Manual(i32)}`. Labels (`50Hz`, `On`, `Auto` for PowerlineFrequency) are checked before the `Auto` keyword. `resolve_set` (pure, unit-tested) turns a `ParsedValue` into the `(value, flags)` pair the driver gets, rejecting unsupported modes and out-of-range values.
+- **`Device::open_property_dialog`** — shows the driver's own property pages (`ISpecifyPropertyPages` + `OleCreatePropertyFrame`), the same window OBS opens for "Configure Video". Useful for checking the tool against what Windows shows; the dialog's Default button applies immediately and keeps Auto mode on for properties that support it.
 - **Unsafe policy** — every `unsafe` block wraps exactly one FFI call and carries a `// SAFETY:` comment (`clippy::undocumented_unsafe_blocks` is on). No function is `unsafe fn`; none can cause UB from safe code.
 - **IndexMap** for ordered output — preserves property order in JSON serialization.
 

@@ -105,6 +105,13 @@ enum Commands {
         output: OutputFormat,
     },
 
+    /// Open the driver's own property dialog for one camera
+    Dialog {
+        /// Camera index from list command (0-based)
+        #[arg(short, long)]
+        camera: String,
+    },
+
     /// Show version information
     Version,
 }
@@ -234,6 +241,7 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<Outcome> {
             output,
         } => list_devices(include_device_path, output, out)?,
         Commands::Get { camera, output } => get_device_properties(&camera, output, out)?,
+        Commands::Dialog { camera } => open_dialog(&camera, out)?,
         Commands::Version => writeln!(out, "wincamcfg {}", env!("CARGO_PKG_VERSION"))?,
         Commands::Set {
             camera,
@@ -304,6 +312,33 @@ fn get_device_properties(camera: &str, output: OutputFormat, out: &mut dyn Write
         OutputFormat::Text => render_text(&outputs, out)?,
         OutputFormat::Json => writeln!(out, "{}", render_json(&outputs)?)?,
     }
+    Ok(())
+}
+
+fn open_dialog(camera: &str, out: &mut dyn Write) -> Result<()> {
+    debug!(camera, "Opening property dialog");
+    if camera.eq_ignore_ascii_case("all") {
+        bail!("The dialog can only be opened for one camera; pass its index");
+    }
+
+    let com = ComSession::new()?;
+    let devices = webcam::open_devices(&com).context("Failed to enumerate devices")?;
+    let indices = parse_camera_selection(camera, devices.len())?;
+    let idx = indices[0];
+    let device = &devices[idx];
+
+    writeln!(
+        out,
+        "[{idx}] {}: opening property dialog...",
+        device.info().display_name()
+    )?;
+    out.flush()?;
+    device.open_property_dialog()?;
+    writeln!(
+        out,
+        "[{idx}] {}: dialog closed",
+        device.info().display_name()
+    )?;
     Ok(())
 }
 

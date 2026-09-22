@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `wincamcfg --version` flag (the `version` subcommand remains).
+- `wincamcfg dialog --camera N` opens the driver's own property dialog (the pages OBS Studio shows under *Configure Video*) for visual confirmation of what `get` reports.
+- `get` shows `Range: min..max` (and the step when it is not 1) for numeric properties and adds `min`, `max` and `step` to the JSON output.
 - Exit codes: 0 success, 1 usage or enumeration error, 2 when `set` completed but at least one property write failed. Previously `set` always exited 0.
 - Hardware-free unit tests for value parsing and formatting, mode reporting, range and capability validation, camera selection and CLI parsing. CI's `cargo test` step was previously a no-op.
 - `SECURITY.md` with a private disclosure channel.
@@ -25,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requesting Auto on a property that does not advertise Auto capability is rejected up front; manual values are range-checked before the driver is called. Auto writes keep the current value instead of sending 0.
 - `--camera all` skips devices that lack the requested property (with a notice) instead of aborting on the first virtual camera; a specific camera index still reports an error.
 - `list` only reads device names and paths; it no longer binds every device's filter and queries every property.
+- Properties are listed in the order of the standard DirectShow property dialog's tabs (Brightness, Contrast, Hue, Saturation, Sharpness, Gamma, WhiteBalance, BacklightCompensation, Gain, ColorEnable, PowerlineFrequency; Zoom, Focus, Exposure, Iris, Pan, Tilt, Roll).
 - Logs go to stderr, so `--output json` stays machine-readable with `RUST_LOG` set. An unparseable `RUST_LOG` value prints a warning instead of silently falling back to `warn`.
 - A property whose current value cannot be read is shown as `<unavailable>` instead of `0`.
 - `set` reports the canonical label (`50Hz`, `Auto`) in its `value` field rather than the raw text typed by the user.

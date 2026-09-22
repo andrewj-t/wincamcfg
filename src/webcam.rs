@@ -42,7 +42,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use tracing::{debug, instrument, trace};
-use windows::Win32::Foundation::S_OK;
+use windows::Win32::Foundation::{HWND, S_OK};
 use windows::Win32::Media::DirectShow::{
     CameraControl_Flags_Auto, CameraControl_Flags_Manual, IAMCameraControl, IAMVideoProcAmp,
     IBaseFilter, ICreateDevEnum, VideoProcAmp_Flags_Auto, VideoProcAmp_Flags_Manual,
@@ -50,10 +50,11 @@ use windows::Win32::Media::DirectShow::{
 use windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-    CoInitializeEx, CoUninitialize, IEnumMoniker, IMoniker,
+    CoInitializeEx, CoTaskMemFree, CoUninitialize, IEnumMoniker, IMoniker,
 };
+use windows::Win32::System::Ole::{ISpecifyPropertyPages, OleCreatePropertyFrame};
 use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VariantClear};
-use windows::core::{GUID, HSTRING, Interface};
+use windows::core::{GUID, HSTRING, IUnknown, Interface};
 
 // ---------------------------------------------------------------------------
 // COM session
@@ -624,6 +625,65 @@ impl Device<'_> {
         })?;
         debug!(property = %info.name, value = raw_value, flags, "Property set");
         Ok(())
+    }
+}
+
+impl Device<'_> {
+    /// Opens the driver's own property dialog (the "Video Proc Amp" and
+    /// "Camera Control" pages) and blocks until the user closes it.
+    ///
+    /// This is the same window OBS Studio and other DirectShow hosts show for
+    /// "Configure Video": the filter's `ISpecifyPropertyPages` pages, displayed
+    /// with `OleCreatePropertyFrame`. Changes made in the dialog are written by
+    /// the driver's page, not by this tool.
+    ///
+    /// # Errors
+    /// Fails when the device cannot be bound, exposes no property pages, or
+    /// the frame cannot be created.
+    #[instrument(skip(self), fields(device = %self.info.display_name()))]
+    pub(crate) fn open_property_dialog(&self) -> Result<()> {
+        let filter = bind_filter(&self.moniker)?;
+        let pages: ISpecifyPropertyPages = filter
+            .cast()
+            .context("Device does not expose property pages")?;
+        // SAFETY: `pages` is a live interface. The returned CAUUID owns a
+        // CoTaskMem allocation that is freed below on every path.
+        let page_ids = unsafe { pages.GetPages() }.context("Failed to enumerate property pages")?;
+        let free_pages = || {
+            // SAFETY: `pElems` was allocated by COM for us and is freed
+            // exactly once; a null pointer is a no-op.
+            unsafe { CoTaskMemFree(Some(page_ids.pElems.cast_const().cast())) };
+        };
+        if page_ids.cElems == 0 || page_ids.pElems.is_null() {
+            free_pages();
+            bail!("Device has no property pages");
+        }
+
+        let object: Option<IUnknown> = Some(filter.cast().context("Failed to get IUnknown")?);
+        let caption = HSTRING::from(self.info.display_name());
+        debug!(pages = page_ids.cElems, "Opening property dialog");
+        // SAFETY: `object` is a valid one-element array of live interface
+        // pointers; `pElems` points at `cElems` valid CLSIDs; the caption is a
+        // NUL-terminated wide string that outlives the call. The frame runs
+        // its own modal message loop on this STA thread and returns when the
+        // dialog closes.
+        let result = unsafe {
+            OleCreatePropertyFrame(
+                HWND::default(),
+                0,
+                0,
+                &caption,
+                1,
+                &raw const object,
+                page_ids.cElems,
+                page_ids.pElems,
+                0,
+                None,
+                None,
+            )
+        };
+        free_pages();
+        result.context("Failed to open the property dialog")
     }
 }
 
