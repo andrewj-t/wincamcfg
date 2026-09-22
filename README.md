@@ -240,4 +240,6 @@ Bug reports and PRs welcome. Before opening a PR run `cargo fmt --all`, `cargo c
 - `src/webcam.rs`: COM session, device enumeration, property reads and writes with read-back verification, device restart, the driver's dialog. The only module that calls Windows.
 - `src/webcam/property.rs`: property identifiers, modes, labels and value parsing. No Windows calls, so it carries most of the unit tests.
 
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has diagrams of how these fit together and what `set` does step by step.
+
 Unit tests sit next to the code they cover and need no camera. Nothing that touches COM is unit-tested, so check `list`, `get` and `set` against a real camera after changing `src/webcam.rs`.

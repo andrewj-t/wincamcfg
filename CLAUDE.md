@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository. Anything the code or its doc comments already say is left out; read the module docs at the top of each file under `src/` for the architecture.
+Guidance for Claude Code when working in this repository. Anything the code or its doc comments already say is left out; read the module docs at the top of each file under `src/` for the architecture, and `docs/ARCHITECTURE.md` for the diagrams (keep them in step with the types when you change them).
 
 ## What this is
 
