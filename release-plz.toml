@@ -26,6 +26,11 @@ features_always_increment_minor = true
 dependencies_update = false
 pr_labels = ["release"]
 pr_name = "chore(release): v{{ version }}"
+# Only open or update the release PR once a user-facing commit has landed
+# since the last tag. Docs-only, CI-only and chore-only merges do not create
+# a release PR on their own; their entries still appear in the changelog of
+# the next release that a matching commit triggers.
+release_commits = "^(feat|fix|perf|refactor|build)[(:!]"
 
 [changelog]
 # Must match the top of CHANGELOG.md; new sections are inserted right after it.
