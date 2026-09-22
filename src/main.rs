@@ -28,7 +28,7 @@ use indexmap::IndexMap;
 use tracing::{debug, info};
 use tracing_subscriber::filter::LevelFilter;
 
-use webcam::{ComSession, ParsedValue};
+use webcam::{ComSession, Mode, ParsedValue, Written};
 
 /// Exit code for usage errors and failed enumeration.
 const EXIT_ERROR: u8 = 1;
@@ -359,14 +359,14 @@ fn set_property(
 
     // Resolve the property name and parse the value once, up front: a typo is
     // a usage error (exit 1), not a per-device failure.
-    let request: Option<(&str, Option<ParsedValue>)> = if reset_all {
+    let request: Option<(&str, ParsedValue)> = if reset_all {
         None
     } else {
         let canonical = webcam::canonical_property_name(property)
             .with_context(|| format!("Unknown property '{property}'"))?;
         let value = match target {
-            SetValue::Default => None,
-            SetValue::Explicit(text) => Some(webcam::parse_property_value(canonical, text)?),
+            SetValue::Default => ParsedValue::Default,
+            SetValue::Explicit(text) => webcam::parse_property_value(canonical, text)?,
         };
         Some((canonical, value))
     };
@@ -381,13 +381,10 @@ fn set_property(
         let jobs: Vec<(&str, ParsedValue)> = match request {
             None => info
                 .properties()
-                .map(|p| (p.name.as_str(), ParsedValue::Manual(p.default)))
+                .map(|p| (p.name.as_str(), ParsedValue::Default))
                 .collect(),
             Some((canonical, value)) => match info.property(canonical) {
-                Some(p) => vec![(
-                    p.name.as_str(),
-                    value.unwrap_or(ParsedValue::Manual(p.default)),
-                )],
+                Some(p) => vec![(p.name.as_str(), value)],
                 // With `--camera all`, devices that lack the property are
                 // skipped so one virtual camera cannot fail a fleet-wide set.
                 None if select_all => {
@@ -409,40 +406,25 @@ fn set_property(
             },
         };
 
-        for (name, value) in jobs {
-            let result = device.set(name, value);
-            match &result {
-                Ok(()) => info!(
-                    device_index = idx,
-                    device_name,
-                    property = name,
-                    ?value,
-                    "Property set"
-                ),
-                Err(error) => {
-                    debug!(device_index = idx, device_name, property = name, ?value, %error, "Failed to set property");
+        let entries = apply_jobs(device, idx, &jobs);
+
+        if output == OutputFormat::Text {
+            for r in &entries {
+                match &r.error {
+                    None => writeln!(
+                        out,
+                        "[{idx}] {device_name}: {} set to {}",
+                        r.property, r.value
+                    )?,
+                    Some(error) => writeln!(
+                        out,
+                        "[{idx}] {device_name}: Failed to set {} - {error}",
+                        r.property
+                    )?,
                 }
             }
-            let entry = SetResult {
-                index: idx,
-                name: device_name.to_owned(),
-                property: name.to_owned(),
-                value: display_value(name, value),
-                success: result.is_ok(),
-                error: result.err().map(|e| format!("{e:#}")),
-            };
-            // Text output streams as it happens so it interleaves correctly
-            // with skip notices; JSON is emitted once at the end.
-            if output == OutputFormat::Text {
-                match &entry.error {
-                    None => writeln!(out, "[{idx}] {device_name}: {name} set to {}", entry.value)?,
-                    Some(error) => {
-                        writeln!(out, "[{idx}] {device_name}: Failed to set {name} - {error}")?;
-                    }
-                }
-            }
-            results.push(entry);
         }
+        results.extend(entries);
     }
 
     if output == OutputFormat::Json {
@@ -454,6 +436,83 @@ fn set_property(
     } else {
         Outcome::PartialFailure
     })
+}
+
+/// Writes each job on one device, then reads every accepted write back through
+/// a fresh handle. Some drivers keep a value only while an application has the
+/// camera open; such a write is reported as a failure, not a success.
+fn apply_jobs(
+    device: &webcam::Device<'_>,
+    idx: usize,
+    jobs: &[(&str, ParsedValue)],
+) -> Vec<SetResult> {
+    let device_name = device.info().display_name();
+    let mut entries: Vec<SetResult> = Vec::with_capacity(jobs.len());
+    let mut accepted: Vec<(usize, &str, Written)> = Vec::new();
+
+    for &(name, value) in jobs {
+        let result = device.set(name, value);
+        match &result {
+            Ok(written) => {
+                info!(
+                    device_index = idx,
+                    device_name,
+                    property = name,
+                    ?written,
+                    "Property set"
+                );
+                accepted.push((entries.len(), name, *written));
+            }
+            Err(error) => {
+                debug!(device_index = idx, device_name, property = name, ?value, %error, "Failed to set property");
+            }
+        }
+        entries.push(SetResult {
+            index: idx,
+            name: device_name.to_owned(),
+            property: name.to_owned(),
+            value: match &result {
+                Ok(written) => display_written(name, *written),
+                Err(_) => display_requested(name, value),
+            },
+            success: result.is_ok(),
+            error: result.err().map(|e| format!("{e:#}")),
+        });
+    }
+
+    if accepted.is_empty() {
+        return entries;
+    }
+    let names: Vec<&str> = accepted.iter().map(|(_, name, _)| *name).collect();
+    match device.read_back(&names) {
+        Ok(readings) => {
+            for ((entry, name, written), reading) in accepted.iter().zip(readings) {
+                if let Some(current) = reading
+                    && !written.persisted_in(current)
+                {
+                    let now = display_current(name, current);
+                    debug!(
+                        device_index = idx,
+                        device_name,
+                        property = name,
+                        ?written,
+                        ?current,
+                        "Write did not persist"
+                    );
+                    let e = &mut entries[*entry];
+                    e.success = false;
+                    e.error = Some(format!(
+                        "the driver accepted the write but the device now reports {now}; \
+                         this camera may keep the setting only while an application has it open"
+                    ));
+                }
+            }
+        }
+        Err(error) => {
+            debug!(device_index = idx, device_name, %error, "Could not read values back");
+        }
+    }
+    entries
 }
 
 // ---------------------------------------------------------------------------
@@ -482,11 +541,31 @@ fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize
     Ok(vec![idx])
 }
 
-/// The value as it will be reported back to the user.
-fn display_value(property: &str, value: ParsedValue) -> String {
+/// What was actually sent to the driver, e.g. `50Hz` or `4000 [Auto]`.
+fn display_written(property: &str, written: Written) -> String {
+    let value = webcam::format_property_value(property, written.value);
+    match written.mode {
+        Mode::Manual => value,
+        Mode::Auto => format!("{value} [Auto]"),
+    }
+}
+
+/// What the user asked for, used when the write itself failed.
+fn display_requested(property: &str, value: ParsedValue) -> String {
     match value {
         ParsedValue::Auto => "Auto".to_owned(),
+        ParsedValue::Default => "default".to_owned(),
         ParsedValue::Manual(v) => webcam::format_property_value(property, v),
+    }
+}
+
+/// What the device reports now, e.g. `50Hz` or `3534 [Auto]`.
+fn display_current(property: &str, current: webcam::CurrentValue) -> String {
+    let value = webcam::format_property_value(property, current.value);
+    if current.flags & Mode::Auto.flag() != 0 {
+        format!("{value} [Auto]")
+    } else {
+        value
     }
 }
 
@@ -675,13 +754,42 @@ mod tests {
     }
 
     #[test]
-    fn display_value_uses_labels() {
+    fn display_values_use_labels_and_modes() {
+        let manual = |value| Written {
+            value,
+            mode: Mode::Manual,
+        };
+        assert_eq!(display_written("PowerlineFrequency", manual(1)), "50Hz");
+        assert_eq!(display_written("Brightness", manual(128)), "128");
         assert_eq!(
-            display_value("PowerlineFrequency", ParsedValue::Manual(1)),
+            display_written(
+                "WhiteBalance",
+                Written {
+                    value: 4000,
+                    mode: Mode::Auto
+                }
+            ),
+            "4000 [Auto]"
+        );
+        assert_eq!(display_requested("Focus", ParsedValue::Auto), "Auto");
+        assert_eq!(display_requested("Focus", ParsedValue::Default), "default");
+        assert_eq!(
+            display_current(
+                "Exposure",
+                webcam::CurrentValue {
+                    value: -6,
+                    flags: Mode::Auto.flag()
+                }
+            ),
+            "-6 [Auto]"
+        );
+        assert_eq!(
+            display_current(
+                "PowerlineFrequency",
+                webcam::CurrentValue { value: 1, flags: 0 }
+            ),
             "50Hz"
         );
-        assert_eq!(display_value("Brightness", ParsedValue::Manual(128)), "128");
-        assert_eq!(display_value("Focus", ParsedValue::Auto), "Auto");
     }
 
     fn output(

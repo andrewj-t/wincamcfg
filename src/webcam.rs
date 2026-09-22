@@ -438,6 +438,10 @@ pub(crate) enum ParsedValue {
     Auto,
     /// Set an explicit value and switch the property to manual mode.
     Manual(i32),
+    /// Restore the driver's default value, in Auto mode where supported.
+    ///
+    /// This is what the Default button of the standard property dialog does.
+    Default,
 }
 
 /// Longest accepted `--value` string.
@@ -581,51 +585,125 @@ impl Device<'_> {
         &self.info
     }
 
-    /// Writes a property on this device.
+    /// Writes a property on this device and reports what was sent.
     ///
     /// The name is matched case-insensitively against the properties the
     /// device reported; the value is validated against the reported range and
-    /// capabilities before the driver is called.
+    /// capabilities before the driver is called. A successful return means
+    /// the driver accepted the write; use [`Device::read_back`] to check that
+    /// it persisted.
     ///
     /// # Errors
     /// Fails when the device does not support the property, the value is out of
     /// range, the requested mode is not supported, or the driver rejects the
     /// write.
     #[instrument(skip(self), fields(device = %self.info.display_name()))]
-    pub(crate) fn set(&self, property: &str, value: ParsedValue) -> Result<()> {
+    pub(crate) fn set(&self, property: &str, value: ParsedValue) -> Result<Written> {
         let info = self.info.property(property).with_context(|| {
             format!(
                 "Property '{property}' not found on device '{}'",
                 self.info.display_name()
             )
         })?;
-        let (raw_value, flags) = resolve_set(info, value)?;
+        let written = resolve_set(info, value)?;
 
         let filter = bind_filter(&self.moniker)?;
-        // The stored name is canonical, so parsing it cannot fail for a
-        // property the device reported; the error path only guards data bugs.
-        let result = match info.property_type {
-            PropertyType::VideoProcAmp => {
-                let id: VideoProcAmpProperty = info.name.parse()?;
-                filter
-                    .cast::<IAMVideoProcAmp>()
-                    .context("Failed to get IAMVideoProcAmp interface")?
-                    .set(id.into(), raw_value, flags)
-            }
-            PropertyType::CameraControl => {
-                let id: CameraControlProperty = info.name.parse()?;
-                filter
-                    .cast::<IAMCameraControl>()
-                    .context("Failed to get IAMCameraControl interface")?
-                    .set(id.into(), raw_value, flags)
-            }
-        };
-        result.with_context(|| {
-            format!("Failed to set {} to {raw_value} (flags {flags})", info.name)
+        control_set(&filter, info, written.value, written.mode.flag()).with_context(|| {
+            format!(
+                "Failed to set {} to {} ({})",
+                info.name, written.value, written.mode
+            )
         })?;
-        debug!(property = %info.name, value = raw_value, flags, "Property set");
-        Ok(())
+        debug!(property = %info.name, value = written.value, mode = %written.mode, "Property set");
+        Ok(written)
     }
+
+    /// Reads properties back through a fresh device handle.
+    ///
+    /// Some drivers keep a written value only while an application holds the
+    /// camera open and revert it when the last handle closes. Re-binding the
+    /// filter after the write is the only way to observe that from a single
+    /// process. Returns one entry per requested property; `None` when the
+    /// property is unknown or the driver refused to read it.
+    ///
+    /// # Errors
+    /// Fails only when the device cannot be bound at all.
+    pub(crate) fn read_back(&self, properties: &[&str]) -> Result<Vec<Option<CurrentValue>>> {
+        let filter = bind_filter(&self.moniker)?;
+        properties
+            .iter()
+            .map(|name| match self.info.property(name) {
+                Some(info) => control_get(&filter, info),
+                None => Ok(None),
+            })
+            .collect()
+    }
+}
+
+/// What a successful write sent to the driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Written {
+    pub value: i32,
+    pub mode: Mode,
+}
+
+impl Written {
+    /// Whether a value read back from the device shows this write took effect.
+    ///
+    /// Manual writes must read back the same value; Auto writes only need the
+    /// Auto flag, since the driver then chooses the value.
+    pub(crate) const fn persisted_in(self, current: CurrentValue) -> bool {
+        match self.mode {
+            Mode::Manual => current.value == self.value,
+            Mode::Auto => current.flags & Mode::Auto.flag() != 0,
+        }
+    }
+}
+
+/// Dispatches a write to the interface the property belongs to.
+fn control_set(filter: &IBaseFilter, info: &PropertyInfo, value: i32, flags: i32) -> Result<()> {
+    // The stored name is canonical, so parsing it cannot fail for a property
+    // the device reported; the error path only guards data bugs.
+    match info.property_type {
+        PropertyType::VideoProcAmp => {
+            let id: VideoProcAmpProperty = info.name.parse()?;
+            filter
+                .cast::<IAMVideoProcAmp>()
+                .context("Failed to get IAMVideoProcAmp interface")?
+                .set(id.into(), value, flags)?;
+        }
+        PropertyType::CameraControl => {
+            let id: CameraControlProperty = info.name.parse()?;
+            filter
+                .cast::<IAMCameraControl>()
+                .context("Failed to get IAMCameraControl interface")?
+                .set(id.into(), value, flags)?;
+        }
+    }
+    Ok(())
+}
+
+/// Dispatches a read to the interface the property belongs to.
+fn control_get(filter: &IBaseFilter, info: &PropertyInfo) -> Result<Option<CurrentValue>> {
+    let current = match info.property_type {
+        PropertyType::VideoProcAmp => {
+            let id: VideoProcAmpProperty = info.name.parse()?;
+            filter
+                .cast::<IAMVideoProcAmp>()
+                .context("Failed to get IAMVideoProcAmp interface")?
+                .get(id.into())
+                .ok()
+        }
+        PropertyType::CameraControl => {
+            let id: CameraControlProperty = info.name.parse()?;
+            filter
+                .cast::<IAMCameraControl>()
+                .context("Failed to get IAMCameraControl interface")?
+                .get(id.into())
+                .ok()
+        }
+    };
+    Ok(current)
 }
 
 impl Device<'_> {
@@ -687,13 +765,15 @@ impl Device<'_> {
     }
 }
 
-/// Turns a requested value into the `(value, flags)` pair the driver expects.
+/// Turns a requested value into the value and mode the driver will be sent.
 ///
 /// `Auto` keeps the current value (or the default) so drivers that insist on an
-/// in-range value even in auto mode are satisfied. A property that advertises
-/// capabilities is only switched to a mode it supports; a property reporting no
-/// capabilities at all is written in manual mode as before.
-fn resolve_set(info: &PropertyInfo, value: ParsedValue) -> Result<(i32, i32)> {
+/// in-range value even in auto mode are satisfied. `Default` restores the
+/// driver's default and re-enables Auto where the property supports it, which
+/// is what the standard property dialog's Default button does. A property that
+/// advertises capabilities is only switched to a mode it supports; a property
+/// reporting no capabilities at all is written in manual mode as before.
+fn resolve_set(info: &PropertyInfo, value: ParsedValue) -> Result<Written> {
     let name = &info.name;
     match value {
         ParsedValue::Auto => {
@@ -704,7 +784,21 @@ fn resolve_set(info: &PropertyInfo, value: ParsedValue) -> Result<(i32, i32)> {
                 );
             }
             let keep = info.current.map_or(info.default, |c| c.value);
-            Ok((keep, Mode::Auto.flag()))
+            Ok(Written {
+                value: keep,
+                mode: Mode::Auto,
+            })
+        }
+        ParsedValue::Default => {
+            let mode = if Mode::Auto.is_supported(info.caps) {
+                Mode::Auto
+            } else {
+                Mode::Manual
+            };
+            Ok(Written {
+                value: info.default,
+                mode,
+            })
         }
         ParsedValue::Manual(v) => {
             if info.caps != 0 && !Mode::Manual.is_supported(info.caps) {
@@ -720,7 +814,10 @@ fn resolve_set(info: &PropertyInfo, value: ParsedValue) -> Result<(i32, i32)> {
             if info.step > 1 && (v - info.min) % info.step != 0 {
                 trace!(property = %name, value = v, step = info.step, "Value is not on the step grid; the driver may round it");
             }
-            Ok((v, Mode::Manual.flag()))
+            Ok(Written {
+                value: v,
+                mode: Mode::Manual,
+            })
         }
     }
 }
@@ -1209,27 +1306,29 @@ mod tests {
     fn resolve_set_validates_range_and_modes() {
         let both = Mode::Auto.flag() | Mode::Manual.flag();
         let p = info("Exposure", -11, -1, 1, -6, both);
+        let manual = |value| Written {
+            value,
+            mode: Mode::Manual,
+        };
+        let auto = |value| Written {
+            value,
+            mode: Mode::Auto,
+        };
         assert_eq!(
             resolve_set(&p, ParsedValue::Manual(-5)).unwrap(),
-            (-5, Mode::Manual.flag())
+            manual(-5)
         );
         resolve_set(&p, ParsedValue::Manual(0)).unwrap_err();
         resolve_set(&p, ParsedValue::Manual(-12)).unwrap_err();
         // Auto keeps the default when no current value is known.
-        assert_eq!(
-            resolve_set(&p, ParsedValue::Auto).unwrap(),
-            (-6, Mode::Auto.flag())
-        );
+        assert_eq!(resolve_set(&p, ParsedValue::Auto).unwrap(), auto(-6));
         // ...and the current value when it is.
         let mut live = p.clone();
         live.current = Some(CurrentValue {
             value: -3,
             flags: Mode::Manual.flag(),
         });
-        assert_eq!(
-            resolve_set(&live, ParsedValue::Auto).unwrap(),
-            (-3, Mode::Auto.flag())
-        );
+        assert_eq!(resolve_set(&live, ParsedValue::Auto).unwrap(), auto(-3));
 
         let manual_only = info("Brightness", 0, 255, 1, 128, Mode::Manual.flag());
         let err = resolve_set(&manual_only, ParsedValue::Auto).unwrap_err();
@@ -1242,8 +1341,59 @@ mod tests {
         let no_caps = info("Gamma", 100, 300, 1, 200, 0);
         assert_eq!(
             resolve_set(&no_caps, ParsedValue::Manual(150)).unwrap(),
-            (150, Mode::Manual.flag())
+            manual(150)
         );
+    }
+
+    #[test]
+    fn default_restores_the_default_value_in_auto_where_supported() {
+        let both = Mode::Auto.flag() | Mode::Manual.flag();
+        let auto_capable = info("WhiteBalance", 2000, 6500, 1, 4000, both);
+        assert_eq!(
+            resolve_set(&auto_capable, ParsedValue::Default).unwrap(),
+            Written {
+                value: 4000,
+                mode: Mode::Auto
+            }
+        );
+        let manual_only = info("Brightness", 0, 255, 1, 128, Mode::Manual.flag());
+        assert_eq!(
+            resolve_set(&manual_only, ParsedValue::Default).unwrap(),
+            Written {
+                value: 128,
+                mode: Mode::Manual
+            }
+        );
+        let no_caps = info("PowerlineFrequency", 1, 2, 1, 2, 0);
+        assert_eq!(
+            resolve_set(&no_caps, ParsedValue::Default).unwrap(),
+            Written {
+                value: 2,
+                mode: Mode::Manual
+            }
+        );
+    }
+
+    #[test]
+    fn persistence_check_compares_value_for_manual_and_flag_for_auto() {
+        let manual = Written {
+            value: 2,
+            mode: Mode::Manual,
+        };
+        assert!(manual.persisted_in(CurrentValue { value: 2, flags: 0 }));
+        assert!(!manual.persisted_in(CurrentValue { value: 1, flags: 0 }));
+        let auto = Written {
+            value: 4000,
+            mode: Mode::Auto,
+        };
+        assert!(auto.persisted_in(CurrentValue {
+            value: 3534,
+            flags: Mode::Auto.flag()
+        }));
+        assert!(!auto.persisted_in(CurrentValue {
+            value: 4000,
+            flags: Mode::Manual.flag()
+        }));
     }
 
     #[test]

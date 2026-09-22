@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wincamcfg --version` flag (the `version` subcommand remains).
 - `wincamcfg dialog --camera N` opens the driver's own property dialog (the pages OBS Studio shows under *Configure Video*) for visual confirmation of what `get` reports.
 - `get` shows `Range: min..max` (and the step when it is not 1) for numeric properties and adds `min`, `max` and `step` to the JSON output.
+- Every write is read back through a fresh device handle. A value the camera drops when the handle closes (the Logitech C920 does this for PowerlineFrequency) is reported as a failure with the value the device actually holds, instead of a false success.
 - Exit codes: 0 success, 1 usage or enumeration error, 2 when `set` completed but at least one property write failed. Previously `set` always exited 0.
 - Hardware-free unit tests for value parsing and formatting, mode reporting, range and capability validation, camera selection and CLI parsing. CI's `cargo test` step was previously a no-op.
 - `SECURITY.md` with a private disclosure channel.
@@ -23,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `--value Auto` on `PowerlineFrequency` now selects the driver's Auto value (3) instead of writing 0 with the Auto flag.
 - Property names are matched case-insensitively throughout (`--property brightness` used to fail after being found).
-- `--default` writes the device's numeric default directly instead of round-tripping through a display string.
+- `--default` writes the device's numeric default directly instead of round-tripping through a display string, and switches properties that support Auto back to Auto, matching the Default button of the Windows property dialog. The `value` field of `set` results shows what was sent, e.g. `4000 [Auto]`.
 - Requesting Auto on a property that does not advertise Auto capability is rejected up front; manual values are range-checked before the driver is called. Auto writes keep the current value instead of sending 0.
 - `--camera all` skips devices that lack the requested property (with a notice) instead of aborting on the first virtual camera; a specific camera index still reports an error.
 - `list` only reads device names and paths; it no longer binds every device's filter and queries every property.

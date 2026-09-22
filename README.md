@@ -112,9 +112,11 @@ wincamcfg set --camera 0 --property Focus --value 0       # autofocus off, fixed
 
 The current mode is shown in square brackets by `get`, e.g. `Exposure: -5 [Manual]` or `Exposure: -6 [Auto]`. Only properties that advertise Auto support will show a mode tag.
 
+Every write is read back through a fresh handle. If the camera silently drops it (some cameras keep a value only while an application has them open), the command reports the value the device actually holds and exits with code 2. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for what to do.
+
 ### Reset to defaults
 
-Restore factory settings:
+Restore factory settings. Properties that support Auto go back to Auto, as the Default button in the Windows dialog does:
 
 ```bash
 # Reset a specific property to default
