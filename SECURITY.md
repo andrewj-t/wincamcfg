@@ -18,4 +18,4 @@ wincamcfg is a local command-line tool that talks to webcam drivers through Dire
 
 ## Verifying releases
 
-Every release ships with build-provenance attestations and SBOMs. See the [release verification](README.md#release-verification) section of the README for how to check them with the GitHub CLI before deploying a binary.
+Every release ships with build-provenance attestations and SBOMs. See the [release verification](docs/release-verification.md) guide for how to check them with the GitHub CLI before deploying a binary.

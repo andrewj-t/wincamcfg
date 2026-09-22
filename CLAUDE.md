@@ -1,50 +1,23 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository. Anything the code or its doc comments already say is left out; read the module docs at the top of each file under `src/` for the architecture, and `docs/ARCHITECTURE.md` for the diagrams (keep them in step with the types when you change them).
+Guidance for Claude Code in this repository. Everything a human contributor also needs lives in [docs/development.md](docs/development.md) (build, test and lint commands, code layout, CI, dependencies, releases) and [docs/architecture.md](docs/architecture.md) (diagrams; keep them in step with the types when you change them). Read those first, plus the module docs at the top of each file under `src/`.
 
-## What this is
+## Working agreement
 
-**wincamcfg** is a Windows-only CLI that reads and writes webcam properties through DirectShow. Five source files: `src/main.rs` (clap definitions, entry point, exit codes), `src/commands.rs` (one handler per subcommand), `src/output.rs` (result rows and text/JSON rendering), `src/webcam.rs` (COM, DirectShow, device restart; the only module that calls Windows) and `src/webcam/property.rs` (property identifiers, modes, labels, value parsing; no Windows calls). Keep it that shape: no lib/bin split, no mocking trait, no extra crates unless they remove code.
+- **Push the branch and stop; the maintainer opens PRs.** Never open, merge or close a pull request, and never delete a remote branch, without being asked.
+- **Never edit the version or CHANGELOG.md by hand.** release-plz owns both. See the Releases section of [docs/development.md](docs/development.md).
+- **Get the commit subject right.** Conventional Commits, and with squash merges the PR title becomes the subject and the changelog line: `feat` bumps the minor version and lands under Added; `fix` under Fixed; `perf`, `refactor` and `build` under Changed; `docs` under Documentation; `build(deps)` under Dependencies; `ci`, `test` and `style` are omitted; a `!` or `BREAKING CHANGE` bumps the major.
+- **Keep the shape.** Five source files, no lib/bin split, no mocking trait, no extra crates unless they remove code.
 
-Branches: `main` releases; feature work happens on short-lived branches merged via PR. Push the branch and stop; the maintainer opens PRs.
+## What you cannot check yourself
 
-## Commands
+- **Verify against a real camera.** The unit tests cover parsing, validation and output; everything that touches COM has to be checked by hand with `cargo run -- list`, `get` and `set`. The `dialog` subcommand shows the driver's own property pages, which is the reference for what "correct" looks like. This machine has a Logitech C920 and an OBS virtual camera. Ask the maintainer to run anything you cannot verify.
+- **Do not remove the re-bind in write verification.** `Device::write_all` reads every accepted write back through a fresh handle (`read_back`) on purpose. Some cameras (C920, PowerlineFrequency) report a written value through the same handle and drop it when the last handle closes; only a fresh handle reveals that. The UVC class driver stores the value in the device's registry parameters and applies it at the next device start, which is what `stored_value`, `Persistence::Stored` and `--restart-device` are for. Details and the experiments behind them are in [docs/troubleshooting.md](docs/troubleshooting.md) and the 0.4.0 changelog entry.
 
-```bash
-cargo build --release
-cargo test                                      # unit tests, no camera needed
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings       # CI runs this with --locked; every warning fails
-cargo +1.88.0 check --locked --all-targets      # MSRV check (rustup toolchain install 1.88.0 first)
-```
+## House rules for the code
 
-`rust-toolchain.toml` pins the compiler for CI, releases and local builds; bump it in its own PR so new clippy findings are reviewed on their own. `rust-version` in Cargo.toml is the MSRV and is checked separately in CI.
+`#[expect(lint, reason = "...")]` instead of `#[allow]`, one FFI call per `unsafe` block with a `// SAFETY:` comment, no `RUSTFLAGS` in CI. The reasons are in the "Things the code cannot tell you" section of [docs/development.md](docs/development.md); read it before touching lints, `unsafe` or the build configuration.
 
-Debug output: `$env:RUST_LOG="trace"; cargo run -- list` (levels only, no per-target filters; goes to stderr).
+## Documentation
 
-## Things the code cannot tell you
-
-- **Verify against a real camera.** The unit tests cover parsing, validation and output; everything that touches COM is checked by hand with `cargo run -- list`, `get` and `set`. The `dialog` subcommand shows the driver's own property pages, which is the reference for what "correct" looks like. This machine has a Logitech C920 and an OBS virtual camera.
-- **Do not remove the re-bind in write verification.** `Device::write_all` reads every accepted write back through a fresh handle (`read_back`) on purpose. Some cameras (C920, PowerlineFrequency) report a written value through the same handle and drop it when the last handle closes; only a fresh handle reveals that. The UVC class driver stores the value in the device's registry parameters and applies it at the next device start, which is what `stored_value`, `Persistence::Stored` and `--restart-device` are for. Details and the experiments behind them are in TROUBLESHOOTING.md and the 0.4.0 changelog entry.
-- **Lint overrides use `#[expect(lint, reason = "...")]`**, never `#[allow]`. The lint set in Cargo.toml is Microsoft's Pragmatic Rust Guidelines set; `clippy.toml` whitelists a few proper nouns for `doc_markdown`.
-- **Every `unsafe` block wraps one FFI call and has a `// SAFETY:` comment**; clippy enforces the comment. No function is `unsafe fn`.
-- **Do not set `RUSTFLAGS` in CI.** It replaces the hardening flags in `.cargo/config.toml` (see the comments there for what they are and how to verify them with `dumpbin`).
-- **The manifest and version resource** are embedded by `build.rs`; the architecture comes from the build target.
-
-## CI/CD
-
-All actions are pinned to commit SHAs; Dependabot refreshes the pins. Workflows: `ci.yml` (fmt, clippy, build, test, MSRV, outdated-lockfile warning, CodeQL after build), `audit.yml` (`cargo audit`, weekly too), `dependency-review.yml`, `release.yml` (release-plz, below), `claude.yml` (`@claude` mentions from owners, members and collaborators only).
-
-`ci.yml` has no path filter on purpose: "Build and Test" is the required check on `main` (ruleset "Protect main"), so it must report on docs-only PRs. Admins can bypass via the UI.
-
-## Dependencies
-
-Dependabot raises cargo PRs for security advisories only and refreshes GitHub Actions pins. Neither releases anything by itself. Routine freshness is manual: when changing the repo for another reason, run `cargo update` and include `Cargo.lock` in the same PR.
-
-## Releases
-
-release-plz (`release-plz.toml`, `.github/workflows/release.yml`) owns the version and CHANGELOG.md:
-
-1. Commit subjects are Conventional Commits and become the changelog. `feat` lands under Added and bumps the minor version; `fix` under Fixed; `perf`, `refactor` and `build` under Changed; `docs` under Documentation; `build(deps)` under Dependencies; `ci`, `test` and `style` are omitted. A `!` or `BREAKING CHANGE` bumps the major. With squash merges the PR title is the subject, so get the title right.
-2. After a merge to `main` that contains a `feat`, `fix`, `perf`, `refactor` or `build` commit (`release_commits`), release-plz opens or updates one release PR (label `release`) with the version bump and the new changelog section, inserted directly under the file's preamble. It is opened with the `RELEASE_PLZ_TOKEN` fine-grained PAT (Contents and Pull requests read/write, this repo only) so CI runs on it; the token expires and must be renewed in the browser, there is no API for it. Never edit the version or CHANGELOG.md by hand in a feature PR.
-3. Merging the release PR tags `v<version>`, creates the GitHub release with that changelog section as its body, and uploads the attested `wincamcfg.exe` and SBOMs. The crate is not on crates.io (`publish = false`, `git_only = true`); the last release is read from the `v*` tags.
+User docs are split by audience: [README.md](README.md) is the pitch and the quick start, `docs/usage.md`, `docs/properties.md`, `docs/reference.md` and `docs/troubleshooting.md` are for users, `docs/development.md` and `docs/architecture.md` are for contributors, and [docs/README.md](docs/README.md) indexes them. Put new prose in the file that matches its audience rather than growing the README.
