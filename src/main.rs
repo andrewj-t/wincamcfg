@@ -1,20 +1,8 @@
 //! wincamcfg: command-line control of webcam properties on Windows.
 //!
-//! The binary has four subcommands (`list`, `get`, `set`, `dialog`) and two
-//! output formats (text and JSON). All DirectShow work lives in [`webcam`];
-//! this file only parses arguments, formats output and maps results to exit
-//! codes.
-//!
-//! # Exit codes
-//!
-//! | Code | Meaning |
-//! |------|---------|
-//! | 0    | Success |
-//! | 1    | Usage error, or the device enumeration itself failed |
-//! | 2    | `set` completed but at least one property write failed |
-//!
-//! Diagnostics go to stderr through `tracing`; set `RUST_LOG` to one of
-//! `trace`, `debug`, `info`, `warn`, `error` or `off` (default `warn`).
+//! All DirectShow work lives in [`webcam`]; this file parses arguments,
+//! formats text or JSON output and maps results to exit codes. Diagnostics go
+//! to stderr through `tracing`, controlled by `RUST_LOG` (default `warn`).
 
 mod webcam;
 
@@ -170,12 +158,10 @@ struct SetResult {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing();
-
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let outcome = run(cli, &mut out)
         .and_then(|code| out.flush().context("Failed to write output").map(|()| code));
-
     match outcome {
         Ok(code) => code,
         // The reader went away (e.g. `| head`); there is nothing left to say.
@@ -198,7 +184,6 @@ fn init_tracing() {
         }),
         Err(_) => LevelFilter::WARN,
     };
-
     tracing_subscriber::fmt()
         .with_max_level(level)
         .with_writer(io::stderr)
@@ -216,7 +201,6 @@ fn is_broken_pipe(error: &anyhow::Error) -> bool {
 
 fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode> {
     debug!(args = ?std::env::args().collect::<Vec<_>>(), "Command line");
-
     match cli.command {
         Commands::List {
             include_device_path,
@@ -232,16 +216,6 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode> {
             output,
             ..
         } => {
-            // clap's `target` group guarantees exactly one of --value/--default,
-            // so `None` here means --default.
-            if property.eq_ignore_ascii_case("all") && value.is_some() {
-                bail!("Property 'all' can only be used with --default");
-            }
-            if restart_device && !webcam::is_elevated() {
-                bail!(
-                    "--restart-device needs administrator rights; run this from an elevated prompt"
-                );
-            }
             return set_property(
                 &camera,
                 &property,
@@ -252,7 +226,6 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode> {
             );
         }
     }
-
     Ok(ExitCode::SUCCESS)
 }
 
@@ -266,12 +239,9 @@ fn list_devices(
     out: &mut dyn Write,
 ) -> Result<()> {
     debug!(include_device_path, ?output, "Listing devices");
-
-    // The session must outlive every COM object below, so it is created first.
     let com = ComSession::new()?;
     let devices = webcam::list_devices(&com).context("Failed to enumerate devices")?;
     info!(count = devices.len(), "Devices found");
-
     match output {
         OutputFormat::Json => writeln!(out, "{}", render_json(&devices)?)?,
         OutputFormat::Text => {
@@ -279,10 +249,11 @@ fn list_devices(
                 writeln!(out, "No video capture devices found.")?;
             }
             for device in &devices {
-                let suffix = match (&device.device_path, include_device_path) {
-                    (Some(path), true) => format!(" ({path})"),
-                    _ => String::new(),
-                };
+                let suffix = device
+                    .device_path
+                    .as_deref()
+                    .filter(|_| include_device_path)
+                    .map_or_else(String::new, |path| format!(" ({path})"));
                 writeln!(out, "[{}] {}{suffix}", device.index, device.name)?;
             }
         }
@@ -292,16 +263,13 @@ fn list_devices(
 
 fn get_device_properties(camera: &str, output: OutputFormat, out: &mut dyn Write) -> Result<()> {
     debug!(camera, ?output, "Getting device properties");
-
     let com = ComSession::new()?;
     let devices = webcam::open_devices(&com).context("Failed to enumerate devices")?;
     let indices = parse_camera_selection(camera, devices.len())?;
-
     let outputs: Vec<DeviceOutput> = indices
         .iter()
         .map(|&idx| build_device_output(idx, &devices[idx].info))
         .collect();
-
     match output {
         OutputFormat::Text => render_text(&outputs, out)?,
         OutputFormat::Json => writeln!(out, "{}", render_json(&outputs)?)?,
@@ -314,13 +282,10 @@ fn open_dialog(camera: &str, out: &mut dyn Write) -> Result<()> {
     if camera.eq_ignore_ascii_case("all") {
         bail!("The dialog can only be opened for one camera; pass its index");
     }
-
     let com = ComSession::new()?;
     let devices = webcam::open_devices(&com).context("Failed to enumerate devices")?;
-    let indices = parse_camera_selection(camera, devices.len())?;
-    let idx = indices[0];
+    let idx = parse_camera_selection(camera, devices.len())?[0];
     let device = &devices[idx];
-
     writeln!(
         out,
         "[{idx}] {}: opening property dialog...",
@@ -332,7 +297,7 @@ fn open_dialog(camera: &str, out: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-/// Runs `set`; `value` is `None` for `--default`.
+/// Runs `set`; `value` is `None` for `--default` (clap guarantees exactly one of the two).
 fn set_property(
     camera: &str,
     property: &str,
@@ -349,12 +314,18 @@ fn set_property(
         ?output,
         "Setting property"
     );
+    let select_all = camera.eq_ignore_ascii_case("all");
+    let reset_all = property.eq_ignore_ascii_case("all");
+    if reset_all && value.is_some() {
+        bail!("Property 'all' can only be used with --default");
+    }
+    if restart_device && !webcam::is_elevated() {
+        bail!("--restart-device needs administrator rights; run this from an elevated prompt");
+    }
 
     let com = ComSession::new()?;
     let devices = webcam::open_devices(&com).context("Failed to enumerate devices")?;
     let indices = parse_camera_selection(camera, devices.len())?;
-    let select_all = camera.eq_ignore_ascii_case("all");
-    let reset_all = property.eq_ignore_ascii_case("all");
 
     // Resolve the property name and parse the value once, up front: a typo is
     // a usage error (exit 1), not a per-device failure.
@@ -374,8 +345,6 @@ fn set_property(
         let device = &devices[idx];
         let info = &device.info;
         let device_name = info.name.as_str();
-
-        // (property, value) pairs to write on this device.
         let jobs: Vec<(&PropertyInfo, ParsedValue)> = match request {
             None => info
                 .properties
@@ -387,12 +356,7 @@ fn set_property(
                 // With `--camera all`, devices that lack the property are
                 // skipped so one virtual camera cannot fail a fleet-wide set.
                 None if select_all => {
-                    info!(
-                        device_index = idx,
-                        device_name,
-                        %property,
-                        "Property not supported; skipped"
-                    );
+                    info!(device_index = idx, device_name, %property, "Property not supported; skipped");
                     if output == OutputFormat::Text {
                         writeln!(
                             out,
@@ -413,26 +377,14 @@ fn set_property(
                 set_result(idx, device_name, prop.property, value, outcome)
             })
             .collect();
-
         if output == OutputFormat::Text {
             for r in &entries {
-                match (&r.error, &r.note) {
-                    (Some(error), _) => writeln!(
-                        out,
-                        "[{idx}] {device_name}: Failed to set {} - {error}",
-                        r.property
-                    )?,
-                    (None, Some(note)) => writeln!(
-                        out,
-                        "[{idx}] {device_name}: {} set to {} ({note})",
-                        r.property, r.value
-                    )?,
-                    (None, None) => writeln!(
-                        out,
-                        "[{idx}] {device_name}: {} set to {}",
-                        r.property, r.value
-                    )?,
-                }
+                let line = match (&r.error, &r.note) {
+                    (Some(error), _) => format!("Failed to set {} - {error}", r.property),
+                    (None, Some(note)) => format!("{} set to {} ({note})", r.property, r.value),
+                    (None, None) => format!("{} set to {}", r.property, r.value),
+                };
+                writeln!(out, "[{idx}] {device_name}: {line}")?;
             }
         }
         results.extend(entries);
@@ -441,7 +393,6 @@ fn set_property(
     if output == OutputFormat::Json {
         writeln!(out, "{}", render_json(&results)?)?;
     }
-
     Ok(if results.iter().all(|r| r.success) {
         ExitCode::SUCCESS
     } else {
@@ -457,57 +408,55 @@ fn set_result(
     requested: ParsedValue,
     outcome: WriteOutcome,
 ) -> SetResult {
-    let (value, note, error) = match outcome {
-        Err(error) => (
-            display_requested(property, requested),
-            None,
-            Some(format!("{error:#}")),
-        ),
-        Ok(report) => {
-            let now = |current: webcam::CurrentValue| display_current(property, current);
-            let (note, error) = match (report.persistence, report.restarted) {
-                (Persistence::Applied | Persistence::Unverified, false) => (None, None),
-                (Persistence::Applied, true) => {
-                    (Some("applied after restarting the device".to_owned()), None)
-                }
-                (Persistence::Unverified, true) => (
-                    Some("device restarted; the value could not be read back".to_owned()),
-                    None,
-                ),
-                (Persistence::Stored(current), _) => (
-                    Some(format!(
-                        "stored by the driver and applied when the camera next starts (reconnect it or reboot); until then the device reports {} except while an application has it open",
-                        now(current)
-                    )),
-                    None,
-                ),
-                (Persistence::Dropped(current), false) => (
-                    None,
-                    Some(format!(
-                        "the driver accepted the write but the device now reports {}; this camera may keep the setting only while an application has it open",
-                        now(current)
-                    )),
-                ),
-                (Persistence::Dropped(current), true) => (
-                    None,
-                    Some(format!(
-                        "the device was restarted but still reports {}",
-                        now(current)
-                    )),
-                ),
-            };
-            (display_written(property, report.written), note, error)
-        }
-    };
-    SetResult {
+    let mut row = SetResult {
         index: idx,
         name: device_name.to_owned(),
         property: property.to_string(),
-        value,
-        success: error.is_none(),
-        note,
-        error,
+        value: String::new(),
+        success: true,
+        note: None,
+        error: None,
+    };
+    match outcome {
+        Err(error) => {
+            row.value = display_requested(property, requested);
+            row.error = Some(format!("{error:#}"));
+        }
+        Ok(report) => {
+            row.value = display_written(property, report.written);
+            let now = |current: webcam::CurrentValue| display_current(property, current);
+            match (report.persistence, report.restarted) {
+                (Persistence::Applied | Persistence::Unverified, false) => {}
+                (Persistence::Applied, true) => {
+                    row.note = Some("applied after restarting the device".to_owned());
+                }
+                (Persistence::Unverified, true) => {
+                    row.note =
+                        Some("device restarted; the value could not be read back".to_owned());
+                }
+                (Persistence::Stored(current), _) => {
+                    row.note = Some(format!(
+                        "stored by the driver and applied when the camera next starts (reconnect it or reboot); until then the device reports {} except while an application has it open",
+                        now(current)
+                    ));
+                }
+                (Persistence::Dropped(current), false) => {
+                    row.error = Some(format!(
+                        "the driver accepted the write but the device now reports {}; this camera may keep the setting only while an application has it open",
+                        now(current)
+                    ));
+                }
+                (Persistence::Dropped(current), true) => {
+                    row.error = Some(format!(
+                        "the device was restarted but still reports {}",
+                        now(current)
+                    ));
+                }
+            }
+        }
     }
+    row.success = row.error.is_none();
+    row
 }
 
 // ---------------------------------------------------------------------------
@@ -583,7 +532,6 @@ fn build_device_output(idx: usize, device: &webcam::DeviceInfo) -> DeviceOutput<
             )
         })
         .collect();
-
     DeviceOutput {
         index: idx,
         name: &device.name,
@@ -613,19 +561,16 @@ fn render_text(outputs: &[DeviceOutput], out: &mut dyn Write) -> Result<()> {
 /// Formats one property as `value [mode] (Range: ..., Modes: ..., Default: ...)`.
 ///
 /// Enum-like properties list their labels under `Supported:` instead of a
-/// numeric range, mirroring the drop-down versus slider split in the standard
-/// DirectShow property dialog. The step is shown only when it is not 1.
+/// range, like the drop-down versus slider split in the standard dialog.
 fn format_property_line(prop: &PropertyOutput) -> String {
     let Some(current) = &prop.value else {
         return "<unavailable>".to_owned();
     };
-
     let mut line = current.clone();
     if let Some(mode) = &prop.mode {
         // Writing to a String cannot fail.
         let _ = write!(line, " [{mode}]");
     }
-
     let mut meta = Vec::with_capacity(4);
     if let Some(supported) = &prop.supported_values {
         meta.push(format!("Supported: {supported}"));
@@ -655,7 +600,11 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use clap::error::ErrorKind;
-    use webcam::Mode;
+    use webcam::{CurrentValue, Mode, WriteReport};
+
+    fn parse(command_line: &str) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(command_line.split(' '))
+    }
 
     #[test]
     fn cli_definition_is_consistent() {
@@ -675,57 +624,28 @@ mod tests {
 
     #[test]
     fn camera_selection_rejects_bad_input() {
-        parse_camera_selection("3", 3).unwrap_err();
-        parse_camera_selection("-1", 3).unwrap_err();
-        parse_camera_selection("a", 3).unwrap_err();
-        parse_camera_selection("", 3).unwrap_err();
-        parse_camera_selection("99999999999999999999", 3).unwrap_err();
-    }
-
-    #[test]
-    fn set_accepts_negative_values() {
-        let cli = Cli::try_parse_from([
-            "wincamcfg",
-            "set",
-            "-c",
-            "0",
-            "-p",
-            "Exposure",
-            "--value",
-            "-5",
-        ])
-        .unwrap();
-        match cli.command {
-            Commands::Set { value, default, .. } => {
-                assert_eq!(value.as_deref(), Some("-5"));
-                assert!(!default);
-            }
-            other => panic!("unexpected command {other:?}"),
+        for camera in ["3", "-1", "a", "", "99999999999999999999"] {
+            parse_camera_selection(camera, 3).unwrap_err();
         }
     }
 
     #[test]
+    fn set_accepts_negative_values() {
+        let cli = parse("wincamcfg set -c 0 -p Exposure --value -5").unwrap();
+        let Commands::Set { value, default, .. } = cli.command else {
+            panic!("unexpected command {:?}", cli.command);
+        };
+        assert_eq!(value.as_deref(), Some("-5"));
+        assert!(!default);
+    }
+
+    #[test]
     fn set_requires_exactly_one_of_value_and_default() {
-        let conflict = Cli::try_parse_from([
-            "wincamcfg",
-            "set",
-            "-c",
-            "0",
-            "-p",
-            "Brightness",
-            "--value",
-            "1",
-            "--default",
-        ])
-        .unwrap_err();
+        let conflict = parse("wincamcfg set -c 0 -p Brightness --value 1 --default").unwrap_err();
         assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
-
-        let missing =
-            Cli::try_parse_from(["wincamcfg", "set", "-c", "0", "-p", "Brightness"]).unwrap_err();
+        let missing = parse("wincamcfg set -c 0 -p Brightness").unwrap_err();
         assert_eq!(missing.kind(), ErrorKind::MissingRequiredArgument);
-
-        let cli = Cli::try_parse_from(["wincamcfg", "set", "-c", "all", "-p", "all", "--default"])
-            .unwrap();
+        let cli = parse("wincamcfg set -c all -p all --default").unwrap();
         assert!(matches!(
             cli.command,
             Commands::Set {
@@ -738,18 +658,8 @@ mod tests {
 
     #[test]
     fn restart_device_flag_parses() {
-        let cli = Cli::try_parse_from([
-            "wincamcfg",
-            "set",
-            "-c",
-            "0",
-            "-p",
-            "PowerlineFrequency",
-            "--value",
-            "50Hz",
-            "--restart-device",
-        ])
-        .unwrap();
+        let cli = parse("wincamcfg set -c 0 -p PowerlineFrequency --value 50Hz --restart-device")
+            .unwrap();
         assert!(matches!(
             cli.command,
             Commands::Set {
@@ -757,16 +667,7 @@ mod tests {
                 ..
             }
         ));
-        let cli = Cli::try_parse_from([
-            "wincamcfg",
-            "set",
-            "-c",
-            "0",
-            "-p",
-            "Brightness",
-            "--default",
-        ])
-        .unwrap();
+        let cli = parse("wincamcfg set -c 0 -p Brightness --default").unwrap();
         assert!(matches!(
             cli.command,
             Commands::Set {
@@ -778,30 +679,25 @@ mod tests {
 
     #[test]
     fn version_flag_is_available() {
-        let err = Cli::try_parse_from(["wincamcfg", "--version"]).unwrap_err();
+        let err = parse("wincamcfg --version").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         assert!(err.to_string().contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]
     fn display_values_use_labels_and_modes() {
-        let manual = |value| Written {
-            value,
-            mode: Mode::Manual,
-        };
+        let written = |value, mode| Written { value, mode };
+        let current = |value, flags| CurrentValue { value, flags };
         assert_eq!(
-            display_written(Property::PowerlineFrequency, manual(1)),
+            display_written(Property::PowerlineFrequency, written(1, Mode::Manual)),
             "50Hz"
         );
-        assert_eq!(display_written(Property::Brightness, manual(128)), "128");
         assert_eq!(
-            display_written(
-                Property::WhiteBalance,
-                Written {
-                    value: 4000,
-                    mode: Mode::Auto
-                }
-            ),
+            display_written(Property::Brightness, written(128, Mode::Manual)),
+            "128"
+        );
+        assert_eq!(
+            display_written(Property::WhiteBalance, written(4000, Mode::Auto)),
             "4000 [Auto]"
         );
         assert_eq!(
@@ -813,20 +709,11 @@ mod tests {
             "default"
         );
         assert_eq!(
-            display_current(
-                Property::Exposure,
-                webcam::CurrentValue {
-                    value: -6,
-                    flags: Mode::Auto.flag()
-                }
-            ),
+            display_current(Property::Exposure, current(-6, Mode::Auto.flag())),
             "-6 [Auto]"
         );
         assert_eq!(
-            display_current(
-                Property::PowerlineFrequency,
-                webcam::CurrentValue { value: 1, flags: 0 }
-            ),
+            display_current(Property::PowerlineFrequency, current(1, 0)),
             "50Hz"
         );
     }
@@ -837,76 +724,52 @@ mod tests {
             value: 1,
             mode: Mode::Manual,
         };
-        let current = webcam::CurrentValue { value: 2, flags: 0 };
-        let report = |persistence: Persistence, restarted: bool| -> WriteOutcome {
-            Ok(webcam::WriteReport {
+        let current = CurrentValue { value: 2, flags: 0 };
+        let row = |persistence, restarted| {
+            let report = WriteReport {
                 written,
                 persistence,
                 restarted,
-            })
-        };
-        let result = |outcome: WriteOutcome| {
+            };
             set_result(
                 0,
                 "Cam",
                 Property::PowerlineFrequency,
                 ParsedValue::Manual(1),
-                outcome,
+                Ok(report),
             )
         };
+        let text = |s: &Option<String>| s.clone().unwrap_or_default();
 
-        let applied = result(report(Persistence::Applied, false));
+        let applied = row(Persistence::Applied, false);
         assert!(applied.success && applied.note.is_none() && applied.error.is_none());
         assert_eq!(applied.value, "50Hz");
-
-        let unverified = result(report(Persistence::Unverified, false));
+        let unverified = row(Persistence::Unverified, false);
         assert!(unverified.success && unverified.note.is_none());
-
-        let stored = result(report(Persistence::Stored(current), false));
-        assert!(stored.success);
-        assert!(stored.note.as_deref().unwrap().contains("reports 60Hz"));
-
-        let dropped = result(report(Persistence::Dropped(current), false));
-        assert!(!dropped.success);
-        assert!(
-            dropped
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("now reports 60Hz")
-        );
-
-        let restarted = result(report(Persistence::Applied, true));
+        let stored = row(Persistence::Stored(current), false);
+        assert!(stored.success && text(&stored.note).contains("reports 60Hz"));
+        let dropped = row(Persistence::Dropped(current), false);
+        assert!(!dropped.success && text(&dropped.error).contains("now reports 60Hz"));
+        let restarted = row(Persistence::Applied, true);
         assert!(restarted.success);
-        assert_eq!(
-            restarted.note.as_deref(),
-            Some("applied after restarting the device")
-        );
-
-        let still_dropped = result(report(Persistence::Dropped(current), true));
-        assert!(!still_dropped.success);
+        assert_eq!(text(&restarted.note), "applied after restarting the device");
+        let still_dropped = row(Persistence::Dropped(current), true);
         assert!(
-            still_dropped
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("still reports 60Hz")
+            !still_dropped.success && text(&still_dropped.error).contains("still reports 60Hz")
         );
+        let unread = row(Persistence::Unverified, true);
+        assert!(unread.success && text(&unread.note).contains("could not be read back"));
 
-        let unread = result(report(Persistence::Unverified, true));
-        assert!(unread.success);
-        assert!(
-            unread
-                .note
-                .as_deref()
-                .unwrap()
-                .contains("could not be read back")
+        let rejected = set_result(
+            0,
+            "Cam",
+            Property::PowerlineFrequency,
+            ParsedValue::Manual(1),
+            Err(anyhow::anyhow!("driver said no")),
         );
-
-        let rejected = result(Err(anyhow::anyhow!("driver said no")));
         assert!(!rejected.success);
         assert_eq!(rejected.value, "50Hz");
-        assert_eq!(rejected.error.as_deref(), Some("driver said no"));
+        assert_eq!(text(&rejected.error), "driver said no");
     }
 
     fn output(
@@ -964,7 +827,6 @@ mod tests {
         let err =
             anyhow::Error::from(io::Error::from(io::ErrorKind::BrokenPipe)).context("writing");
         assert!(is_broken_pipe(&err));
-        let other = anyhow::anyhow!("something else");
-        assert!(!is_broken_pipe(&other));
+        assert!(!is_broken_pipe(&anyhow::anyhow!("something else")));
     }
 }
