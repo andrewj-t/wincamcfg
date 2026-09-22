@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **wincamcfg** is a Windows-only CLI utility for managing webcam properties via DirectShow/COM APIs. Primary use case: fixing powerline frequency flickering (50Hz/60Hz) and configuring camera properties programmatically.
 
 - Rust 2024 edition, Windows-only target
-- Branches: `main` (releases), `develop` (active development)
+- Branches: `main` (releases); feature work happens on short-lived branches merged via PR
 
 ## Build & Development Commands
 
@@ -48,7 +48,7 @@ Embeds a Windows application manifest (amd64, asInvoker, Windows 10/11 compatibi
 
 ## CI/CD
 
-- **ci.yml** — Runs on PRs/pushes to main/develop: fmt check, clippy, build, test, artifact upload; a CodeQL job (rust + actions) runs only after build/test pass.
+- **ci.yml** — Runs on PRs and pushes to main: fmt check, clippy, build, test, artifact upload; a CodeQL job (rust + actions) runs only after build/test pass.
 - **release.yml** — Triggered via `workflow_run` after CI succeeds on main: skips quietly if the version's tag already exists, otherwise builds the release binary, tags the CI-validated commit, generates SBOMs (SPDX + CycloneDX), attests, and creates the GitHub release. It does NOT push to main (branch protection rejects workflow pushes).
 - **auto-patch-bump.yml** — Auto-bumps patch version on Dependabot cargo PRs and adds changelog entry.
 

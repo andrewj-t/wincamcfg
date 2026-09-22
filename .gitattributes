@@ -1,0 +1,6 @@
+# Normalise line endings: store LF in the repository regardless of platform.
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.exe binary
