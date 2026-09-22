@@ -27,7 +27,7 @@ Arrows mean "uses". `webcam.rs` re-exports everything from `property.rs`, so the
 
 ## Device model (`webcam.rs` and `webcam/property.rs`)
 
-`ComSession` is the proof that COM is initialised on this thread. Every `Device` borrows it, so the borrow checker guarantees no COM interface outlives the session. A `Device` holds the DirectShow moniker (the handle used to bind the driver) and a `DeviceInfo`, which is plain data. Each `PropertyInfo` describes one property the device reported, keyed by the `Property` enum.
+`ComSession` is the proof that COM is initialised on this thread. Every `Device` borrows it, so the borrow checker guarantees no COM interface outlives the session. A `Device` holds the DirectShow moniker (the handle used to bind the driver) and a `DeviceInfo`, which is plain data. Each `PropertyInfo` describes one property the device reported, keyed by the `Property` enum. `DriverInfo` is what the registry says about the bound driver, read once at enumeration for devices that have a PnP path.
 
 ```mermaid
 classDiagram
@@ -52,7 +52,17 @@ classDiagram
         +String name
         +Option~String~ device_path
         +Vec~PropertyInfo~ properties
+        +Option~DriverInfo~ driver
         +property(Property) Option~PropertyInfo~
+    }
+
+    class DriverInfo {
+        +Option~String~ description
+        +Option~String~ manufacturer
+        +Option~String~ provider
+        +Option~String~ version
+        +Option~String~ date
+        +Option~String~ inf_path
     }
 
     class PropertyInfo {
@@ -134,6 +144,7 @@ classDiagram
     Device ..> ComSession : borrows for its lifetime
     Device *-- DeviceInfo
     DeviceInfo *-- "0..*" PropertyInfo
+    DeviceInfo *-- "0..1" DriverInfo
     PropertyInfo --> Property
     PropertyInfo --> "0..1" CurrentValue
     Property --> PropertyType : kind()
@@ -244,6 +255,7 @@ sequenceDiagram
     cmd->>wc: ComSession::new()
     cmd->>wc: open_devices(&com)
     wc->>drv: enumerate monikers, bind each filter, GetRange/Get every property
+    wc->>reg: read driver details for each PnP device
     drv-->>wc: Vec#lt;Device#gt;
     loop each selected device
         cmd->>cmd: select jobs: all properties, or the one requested

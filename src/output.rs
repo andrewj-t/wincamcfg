@@ -9,7 +9,7 @@ use std::io::Write;
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
 
-use crate::webcam::{self, DeviceInfo, ParsedValue, Property, PropertyInfo};
+use crate::webcam::{self, DeviceInfo, DriverInfo, ParsedValue, Property, PropertyInfo};
 
 // ---------------------------------------------------------------------------
 // Output structures
@@ -20,6 +20,8 @@ use crate::webcam::{self, DeviceInfo, ParsedValue, Property, PropertyInfo};
 pub(crate) struct DeviceOutput {
     index: usize,
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    driver: Option<DriverInfo>,
     properties: IndexMap<String, PropertyOutput>,
 }
 
@@ -104,6 +106,7 @@ pub(crate) fn build_device_output(idx: usize, device: &DeviceInfo) -> DeviceOutp
     DeviceOutput {
         index: idx,
         name: device.name.clone(),
+        driver: device.driver.clone(),
         properties: device
             .properties
             .iter()
@@ -119,6 +122,12 @@ pub(crate) fn render_json<T: serde::Serialize>(value: &T) -> Result<String> {
 pub(crate) fn render_text(outputs: &[DeviceOutput], out: &mut dyn Write) -> Result<()> {
     for output in outputs {
         writeln!(out, "[{}] {}", output.index, output.name)?;
+        if let Some(driver) = &output.driver {
+            writeln!(out, "  Driver:")?;
+            for line in driver_lines(driver) {
+                writeln!(out, "    {line}")?;
+            }
+        }
         writeln!(out, "  Properties:")?;
         if output.properties.is_empty() {
             writeln!(out, "    No properties available")?;
@@ -129,6 +138,21 @@ pub(crate) fn render_text(outputs: &[DeviceOutput], out: &mut dyn Write) -> Resu
         writeln!(out)?;
     }
     Ok(())
+}
+
+/// The lines of the `Driver:` block in `get` text output, one per field the registry had.
+fn driver_lines(driver: &DriverInfo) -> Vec<String> {
+    [
+        ("Description", &driver.description),
+        ("Manufacturer", &driver.manufacturer),
+        ("Provider", &driver.provider),
+        ("Version", &driver.version),
+        ("Date", &driver.date),
+        ("INF", &driver.inf_path),
+    ]
+    .into_iter()
+    .filter_map(|(label, value)| value.as_ref().map(|v| format!("{label}: {v}")))
+    .collect()
 }
 
 /// Writes one text line per `set` result row.
@@ -210,6 +234,20 @@ mod tests {
             "3"
         );
     }
+    #[test]
+    fn driver_block_lists_only_known_fields() {
+        let driver = DriverInfo {
+            manufacturer: Some("Logitech".to_owned()),
+            version: Some("1.4.40.0".to_owned()),
+            ..DriverInfo::default()
+        };
+        assert_eq!(
+            driver_lines(&driver),
+            ["Manufacturer: Logitech", "Version: 1.4.40.0"]
+        );
+        assert!(driver_lines(&DriverInfo::default()).is_empty());
+    }
+
     fn output(
         value: Option<&str>,
         min: i32,

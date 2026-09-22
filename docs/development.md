@@ -9,7 +9,7 @@ What you need to know to change the code. [architecture.md](architecture.md) has
 - `src/main.rs`: clap definitions, entry point, exit codes.
 - `src/commands.rs`: one handler per subcommand.
 - `src/output.rs`: result rows and their text and JSON rendering.
-- `src/webcam.rs`: COM session, device enumeration, property reads and writes with read-back verification, device restart, the driver's dialog. The only module that calls Windows.
+- `src/webcam.rs`: COM session, device enumeration, driver details from the registry, property reads and writes with read-back verification, device restart, the driver's dialog. The only module that calls Windows.
 - `src/webcam/property.rs`: property identifiers, modes, labels and value parsing. No Windows calls, so it carries most of the unit tests.
 
 Keep it that shape: no lib/bin split, no mocking trait, no extra crates unless they remove code.

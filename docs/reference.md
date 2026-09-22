@@ -158,13 +158,21 @@ An array of devices. `device_path` is included for every device that reports one
 
 ### `get --output json`
 
-An array of devices, each with a `properties` object keyed by property name and in the same order as the text output. `value` and `default` are already formatted, so an enumeration property shows its label. `mode` appears only for properties that can switch modes, `supported_values` only for properties with labels, and `modes_supported` only where the driver reported capabilities.
+An array of devices, each with a `properties` object keyed by property name and in the same order as the text output. A `driver` object appears for devices Windows knows as PnP devices (a virtual camera has none); each of its fields appears only when the registry has it. `value` and `default` are already formatted, so an enumeration property shows its label. `mode` appears only for properties that can switch modes, `supported_values` only for properties with labels, and `modes_supported` only where the driver reported capabilities.
 
 ```json
 [
   {
     "index": 0,
     "name": "HD Pro Webcam C920",
+    "driver": {
+      "description": "HD Pro Webcam C920",
+      "manufacturer": "Logitech",
+      "provider": "Logitech",
+      "version": "1.4.40.0",
+      "date": "4-27-2021",
+      "inf_path": "C:\\WINDOWS\\INF\\oem16.inf"
+    },
     "properties": {
       "Brightness": {
         "value": "128",

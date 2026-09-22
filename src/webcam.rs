@@ -105,6 +105,29 @@ pub(crate) struct DeviceInfo {
     pub device_path: Option<String>,
     /// All supported properties, `VideoProcAmp` first, in query order.
     pub properties: Vec<PropertyInfo>,
+    /// What Windows records about the bound driver; `None` for devices without a PnP path.
+    pub driver: Option<DriverInfo>,
+}
+
+/// Driver details from the device's PnP registry keys, as Windows shows them in Device Manager.
+///
+/// Every field is `None` when the registry does not have it. `description` and
+/// `manufacturer` come from the device's `Enum` key, the rest from the driver
+/// package's `Class` key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct DriverInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manufacturer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inf_path: Option<String>,
 }
 
 impl DeviceInfo {
@@ -419,6 +442,65 @@ fn device_instance_id(device_path: &str) -> Option<String> {
     (id.matches('\\').count() == 2).then_some(id)
 }
 
+/// Reads the driver details for a device instance from `HKLM\SYSTEM\CurrentControlSet`.
+///
+/// The device's `Enum` key names its driver package in the `Driver` value
+/// (`{class-guid}\NNNN`), which is a subkey of `Control\Class`. Both keys are
+/// world-readable. Returns `None` when the device has no `Enum` key.
+fn read_driver_info(instance_id: &str) -> Option<DriverInfo> {
+    let string = |key: &Option<windows_registry::Key>, name: &str| {
+        key.as_ref()
+            .and_then(|k| k.get_string(name).ok())
+            .map(|s| resolve_indirect(&s))
+    };
+    let enum_key = windows_registry::LOCAL_MACHINE
+        .open(format!("SYSTEM\\CurrentControlSet\\Enum\\{instance_id}"))
+        .ok();
+    enum_key.as_ref()?;
+    let class_key = string(&enum_key, "Driver").and_then(|driver| {
+        windows_registry::LOCAL_MACHINE
+            .open(format!(
+                "SYSTEM\\CurrentControlSet\\Control\\Class\\{driver}"
+            ))
+            .ok()
+    });
+    Some(DriverInfo {
+        description: string(&enum_key, "DeviceDesc"),
+        manufacturer: string(&enum_key, "Mfg"),
+        provider: string(&class_key, "ProviderName"),
+        version: string(&class_key, "DriverVersion"),
+        date: string(&class_key, "DriverDate"),
+        inf_path: string(&class_key, "InfPath").map(|name| published_inf_path(&name)),
+    })
+}
+
+/// The published copy of a driver's INF file: `%SystemRoot%\INF\<name>`.
+///
+/// The registry stores only the published name (`oem16.inf`); Windows keeps
+/// that copy under the INF directory for every installed driver package.
+fn published_inf_path(inf_name: &str) -> String {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    std::path::Path::new(&root)
+        .join("INF")
+        .join(inf_name)
+        .display()
+        .to_string()
+}
+
+/// Resolves a Windows indirect string such as `@oem16.inf,%str_provider%;Logitech`.
+///
+/// PnP stores the text it resolved at install time after the `;`, so the
+/// reference itself never has to be loaded. Plain strings are returned as is.
+fn resolve_indirect(value: &str) -> String {
+    match value
+        .strip_prefix('@')
+        .and_then(|reference| reference.rsplit_once(';'))
+    {
+        Some((_, text)) => text.to_owned(),
+        None => value.to_owned(),
+    }
+}
+
 /// Reads a DWORD from the device's `Device Parameters` key, which is world-readable.
 fn read_device_parameter_dword(instance_id: &str, value_name: &str) -> Option<i32> {
     let key = windows_registry::LOCAL_MACHINE
@@ -587,12 +669,17 @@ pub(crate) fn open_devices(com: &ComSession) -> Result<Vec<Device<'_>>> {
                 Vec::new()
             }
         };
+        let driver = device_path
+            .as_deref()
+            .and_then(device_instance_id)
+            .and_then(|instance| read_driver_info(&instance));
         devices.push(Device {
             moniker,
             info: DeviceInfo {
                 name,
                 device_path,
                 properties,
+                driver,
             },
             _com: PhantomData,
         });
@@ -686,6 +773,27 @@ mod tests {
     }
 
     #[test]
+    fn indirect_strings_resolve_to_their_cached_text() {
+        assert_eq!(
+            resolve_indirect("@oem16.inf,%str_provider%;Logitech"),
+            "Logitech"
+        );
+        assert_eq!(
+            resolve_indirect("@oem16.inf,%pid_082d_dd%;HD Pro Webcam C920"),
+            "HD Pro Webcam C920"
+        );
+        assert_eq!(resolve_indirect("1.4.40.0"), "1.4.40.0");
+        assert_eq!(resolve_indirect("@no-cached-text"), "@no-cached-text");
+    }
+
+    #[test]
+    fn inf_names_resolve_under_the_windows_inf_directory() {
+        let path = published_inf_path("oem16.inf");
+        assert!(path.ends_with("\\INF\\oem16.inf"), "{path}");
+        assert!(path.contains(':'), "absolute: {path}");
+    }
+
+    #[test]
     fn device_path_maps_to_pnp_instance_id() {
         let path = "\\\\?\\usb#vid_046d&pid_082d&mi_00#6&1f335e1e&1&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\\global";
         assert_eq!(
@@ -701,6 +809,7 @@ mod tests {
         let device = DeviceInfo {
             name: "Unknown".to_owned(),
             device_path: None,
+            driver: None,
             properties: vec![info(Property::Brightness), info(Property::Focus)],
         };
         assert!(device.property(Property::Brightness).is_some());
