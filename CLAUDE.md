@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository. Anything the code or its doc comments already say is left out; read `src/main.rs` and `src/webcam.rs` (module docs first) for the architecture.
+Guidance for Claude Code when working in this repository. Anything the code or its doc comments already say is left out; read the module docs at the top of each file under `src/` for the architecture.
 
 ## What this is
 
-**wincamcfg** is a Windows-only CLI that reads and writes webcam properties through DirectShow. Two source files: `src/main.rs` (clap CLI, output, exit codes) and `src/webcam.rs` (COM, DirectShow, value parsing). Keep it that shape: no lib/bin split, no mocking trait, no extra crates unless they remove code.
+**wincamcfg** is a Windows-only CLI that reads and writes webcam properties through DirectShow. Five source files: `src/main.rs` (clap definitions, entry point, exit codes), `src/commands.rs` (one handler per subcommand), `src/output.rs` (result rows and text/JSON rendering), `src/webcam.rs` (COM, DirectShow, device restart; the only module that calls Windows) and `src/webcam/property.rs` (property identifiers, modes, labels, value parsing; no Windows calls). Keep it that shape: no lib/bin split, no mocking trait, no extra crates unless they remove code.
 
 Branches: `main` releases; feature work happens on short-lived branches merged via PR. Push the branch and stop; the maintainer opens PRs.
 
