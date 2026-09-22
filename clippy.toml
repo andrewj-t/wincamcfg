@@ -1,3 +1,3 @@
 # Proper nouns and CLI identifiers that clippy::doc_markdown would otherwise
 # want wrapped in backticks. ".." keeps clippy's built-in list.
-doc-valid-idents = ["..", "DirectShow", "PowerlineFrequency", "BacklightCompensation", "ColorEnable", "WhiteBalance"]
+doc-valid-idents = ["..", "DirectShow", "PnP", "PowerlineFrequency", "BacklightCompensation", "ColorEnable", "WhiteBalance"]

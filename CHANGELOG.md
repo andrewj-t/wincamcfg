@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wincamcfg --version` flag (the `version` subcommand remains).
 - `wincamcfg dialog --camera N` opens the driver's own property dialog (the pages OBS Studio shows under *Configure Video*) for visual confirmation of what `get` reports.
 - `get` shows `Range: min..max` (and the step when it is not 1) for numeric properties and adds `min`, `max` and `step` to the JSON output.
-- Every write is read back through a fresh device handle. A value the camera drops when the handle closes (the Logitech C920 does this for PowerlineFrequency) is reported as a failure with the value the device actually holds, instead of a false success.
+- Every write is read back through a fresh device handle. A value the camera drops when the handle closes (the Logitech C920 does this for PowerlineFrequency) is reported as "stored by the driver and applied when the camera next starts" when the Windows UVC driver has recorded it, and as a failure with the value the device actually holds otherwise, instead of a false success. `set` results gain an optional `note` field.
 - Exit codes: 0 success, 1 usage or enumeration error, 2 when `set` completed but at least one property write failed. Previously `set` always exited 0.
 - Hardware-free unit tests for value parsing and formatting, mode reporting, range and capability validation, camera selection and CLI parsing. CI's `cargo test` step was previously a no-op.
 - `SECURITY.md` with a private disclosure channel.

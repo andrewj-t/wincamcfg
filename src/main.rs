@@ -173,6 +173,9 @@ struct SetResult {
     property: String,
     value: String,
     success: bool,
+    /// Set when the write succeeded with a caveat the caller should know about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -410,16 +413,21 @@ fn set_property(
 
         if output == OutputFormat::Text {
             for r in &entries {
-                match &r.error {
-                    None => writeln!(
-                        out,
-                        "[{idx}] {device_name}: {} set to {}",
-                        r.property, r.value
-                    )?,
-                    Some(error) => writeln!(
+                match (&r.error, &r.note) {
+                    (Some(error), _) => writeln!(
                         out,
                         "[{idx}] {device_name}: Failed to set {} - {error}",
                         r.property
+                    )?,
+                    (None, Some(note)) => writeln!(
+                        out,
+                        "[{idx}] {device_name}: {} set to {} ({note})",
+                        r.property, r.value
+                    )?,
+                    (None, None) => writeln!(
+                        out,
+                        "[{idx}] {device_name}: {} set to {}",
+                        r.property, r.value
                     )?,
                 }
             }
@@ -476,6 +484,7 @@ fn apply_jobs(
                 Err(_) => display_requested(name, value),
             },
             success: result.is_ok(),
+            note: None,
             error: result.err().map(|e| format!("{e:#}")),
         });
     }
@@ -491,20 +500,38 @@ fn apply_jobs(
                     && !written.persisted_in(current)
                 {
                     let now = display_current(name, current);
-                    debug!(
-                        device_index = idx,
-                        device_name,
-                        property = name,
-                        ?written,
-                        ?current,
-                        "Write did not persist"
-                    );
                     let e = &mut entries[*entry];
-                    e.success = false;
-                    e.error = Some(format!(
-                        "the driver accepted the write but the device now reports {now}; \
-                         this camera may keep the setting only while an application has it open"
-                    ));
+                    // The UVC class driver stores some controls and applies
+                    // them at the next device start even when the camera drops
+                    // them on close; that is a success with a caveat.
+                    if device.stored_value(name) == Some(written.value) {
+                        debug!(
+                            device_index = idx,
+                            device_name,
+                            property = name,
+                            ?written,
+                            ?current,
+                            "Write stored by the driver; pending device restart"
+                        );
+                        e.note = Some(format!(
+                            "stored by the driver and applied when the camera next starts (reconnect it or reboot); \
+                             until then the device reports {now} except while an application has it open"
+                        ));
+                    } else {
+                        debug!(
+                            device_index = idx,
+                            device_name,
+                            property = name,
+                            ?written,
+                            ?current,
+                            "Write did not persist"
+                        );
+                        e.success = false;
+                        e.error = Some(format!(
+                            "the driver accepted the write but the device now reports {now}; \
+                             this camera may keep the setting only while an application has it open"
+                        ));
+                    }
                 }
             }
         }

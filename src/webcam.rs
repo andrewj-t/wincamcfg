@@ -53,6 +53,7 @@ use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemFree, CoUninitialize, IEnumMoniker, IMoniker,
 };
 use windows::Win32::System::Ole::{ISpecifyPropertyPages, OleCreatePropertyFrame};
+use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VariantClear};
 use windows::core::{GUID, HSTRING, IUnknown, Interface};
 
@@ -536,6 +537,8 @@ pub(crate) struct PropertyInfo {
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceInfo {
     pub name: Option<String>,
+    /// DirectShow device path, e.g. `\\?\usb#vid_046d&pid_082d&mi_00#...`.
+    pub device_path: Option<String>,
     pub video_proc_amp_properties: Vec<PropertyInfo>,
     pub camera_control_properties: Vec<PropertyInfo>,
 }
@@ -638,6 +641,74 @@ impl Device<'_> {
             })
             .collect()
     }
+}
+
+impl Device<'_> {
+    /// The value the UVC class driver has stored for a property, if any.
+    ///
+    /// `usbvideo.sys` records some controls under the device's
+    /// `Device Parameters` registry key when they are written (currently only
+    /// `PowerlineFrequency` is known to be stored) and applies them the next
+    /// time the device starts. A camera that does not keep such a control
+    /// across handle closes therefore still honours the write after a
+    /// reconnect or reboot. Returns `None` for vendor drivers, properties the
+    /// class driver does not store, or devices without a device path.
+    pub(crate) fn stored_value(&self, property: &str) -> Option<i32> {
+        if !property.eq_ignore_ascii_case(VideoProcAmpProperty::PowerlineFrequency.as_str()) {
+            return None;
+        }
+        let instance = device_instance_id(self.info.device_path.as_deref()?)?;
+        read_device_parameter_dword(&instance, "PowerlineFrequency")
+    }
+}
+
+/// Converts a DirectShow device path into a PnP device instance id.
+///
+/// `\\?\usb#vid_046d&pid_082d&mi_00#6&1f335e1e&1&0000#{guid}\global`
+/// becomes `USB\VID_046D&PID_082D&MI_00\6&1F335E1E&1&0000`, which is the
+/// device's key under `HKLM\SYSTEM\CurrentControlSet\Enum`.
+fn device_instance_id(device_path: &str) -> Option<String> {
+    let path = device_path.strip_prefix("\\\\?\\").unwrap_or(device_path);
+    let (instance, _interface_class) = path.split_once("#{")?;
+    let id = instance.replace('#', "\\").to_ascii_uppercase();
+    (id.matches('\\').count() == 2).then_some(id)
+}
+
+/// Reads a DWORD from `HKLM\SYSTEM\CurrentControlSet\Enum\<instance>\Device Parameters`.
+///
+/// This key is world-readable, so no elevation is needed.
+fn read_device_parameter_dword(instance_id: &str, value_name: &str) -> Option<i32> {
+    let subkey = HSTRING::from(format!(
+        "SYSTEM\\CurrentControlSet\\Enum\\{instance_id}\\Device Parameters"
+    ));
+    let value = HSTRING::from(value_name);
+    let mut data: u32 = 0;
+    let mut size = u32::try_from(size_of::<u32>()).ok()?;
+    // SAFETY: `subkey` and `value` are valid NUL-terminated wide strings that
+    // outlive the call; `data` is a valid 4-byte buffer and `size` holds its
+    // length, both living for the duration of the call. RRF_RT_REG_DWORD makes
+    // the API reject any value that is not exactly a DWORD.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            &subkey,
+            &value,
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&raw mut data).cast()),
+            Some(&raw mut size),
+        )
+    };
+    if status.is_err() {
+        trace!(
+            instance_id,
+            value_name,
+            ?status,
+            "No stored device parameter"
+        );
+        return None;
+    }
+    i32::try_from(data).ok()
 }
 
 /// What a successful write sent to the driver.
@@ -999,7 +1070,8 @@ pub(crate) fn open_devices(com: &ComSession) -> Result<Vec<Device<'_>>> {
 
     for moniker in monikers {
         let name = read_bag_string(&moniker, "FriendlyName").ok();
-        debug!(?name, "Processing device");
+        let device_path = read_bag_string(&moniker, "DevicePath").ok();
+        debug!(?name, ?device_path, "Processing device");
 
         let (video_proc_amp_properties, camera_control_properties) = match bind_filter(&moniker) {
             Ok(filter) => (
@@ -1016,6 +1088,7 @@ pub(crate) fn open_devices(com: &ComSession) -> Result<Vec<Device<'_>>> {
             moniker,
             info: DeviceInfo {
                 name,
+                device_path,
                 video_proc_amp_properties,
                 camera_control_properties,
             },
@@ -1397,9 +1470,21 @@ mod tests {
     }
 
     #[test]
+    fn device_path_maps_to_pnp_instance_id() {
+        let path = "\\\\?\\usb#vid_046d&pid_082d&mi_00#6&1f335e1e&1&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\\global";
+        assert_eq!(
+            device_instance_id(path).as_deref(),
+            Some("USB\\VID_046D&PID_082D&MI_00\\6&1F335E1E&1&0000")
+        );
+        assert_eq!(device_instance_id("not a device path"), None);
+        assert_eq!(device_instance_id("\\\\?\\usb#only-one-part#{guid}"), None);
+    }
+
+    #[test]
     fn device_info_lookup_ignores_case() {
         let device = DeviceInfo {
             name: None,
+            device_path: None,
             video_proc_amp_properties: vec![info("Brightness", 0, 255, 1, 128, 2)],
             camera_control_properties: vec![info("Focus", 0, 255, 1, 0, 3)],
         };
