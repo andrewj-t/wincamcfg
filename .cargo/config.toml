@@ -1,0 +1,13 @@
+# Enable Control Flow Guard (CFG) on MSVC targets so the shipped binary
+# participates in Windows' indirect-call protection.
+#
+# Caveats:
+# - A user-set RUSTFLAGS environment variable REPLACES these flags entirely,
+#   so CI must not export RUSTFLAGS.
+# - The prebuilt standard library is not CFG-instrumented; protection covers
+#   this crate and its dependencies. Full coverage would need -Zbuild-std.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "control-flow-guard"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "control-flow-guard"]

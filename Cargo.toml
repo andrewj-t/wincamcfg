@@ -2,10 +2,18 @@
 name = "wincamcfg"
 version = "0.3.2"
 edition = "2024"
+# Minimum supported Rust version. The code uses let-chains (stable since 1.88).
+# CI has an `msrv` job that checks the build on exactly this version.
+rust-version = "1.88"
 description = "A command line utility for managing webcam configuration on windows"
 license = "MIT"
 repository = "https://github.com/andrewj-t/wincamcfg/"
 homepage = "https://github.com/andrewj-t/wincamcfg/"
+readme = "README.md"
+keywords = ["webcam", "directshow", "camera", "windows", "cli"]
+categories = ["command-line-utilities", "multimedia::video", "os::windows-apis"]
+# Distributed as a GitHub release binary, not through crates.io.
+publish = false
 
 [dependencies]
 anyhow = "1.0"
@@ -14,13 +22,32 @@ indexmap = { version = "2.14", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
-windows = { version = ">=0.59, <=0.62", features = [
+# Only the plain formatter is needed; `ansi` and the `log` bridge would pull
+# nu-ansi-term, tracing-log and friends for no benefit.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+# Default features are kept on purpose: they only add `std`, which is required
+# for `windows::core::Error` to implement `std::error::Error` (anyhow interop).
+# `Win32_System_Ole` is required because it gates the `VARIANT` type.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
-    "Win32_Media_DirectShow",
-    "Win32_System_Variant",
     "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_Media_DirectShow",
 ] }
 
 [build-dependencies]
 winresource = "0.1"
+
+[profile.release]
+# Single small binary: whole-program LTO and one codegen unit cost seconds of
+# build time and give the smallest, fastest executable.
+lto = "fat"
+codegen-units = 1
+# Nothing catches panics (no catch_unwind), so unwinding machinery is dead weight.
+panic = "abort"
+# Symbols are not needed in the shipped binary; crash triage uses trace logs.
+strip = "symbols"
+# There are no hot loops; a loud abort beats a silent wrap on bad arithmetic.
+overflow-checks = true
