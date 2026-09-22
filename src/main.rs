@@ -29,18 +29,12 @@ use indexmap::IndexMap;
 use tracing::{debug, info};
 use tracing_subscriber::filter::LevelFilter;
 
-use webcam::{ComSession, Mode, ParsedValue, Written};
+use webcam::{ComSession, ParsedValue, Property, PropertyInfo, Written};
 
 /// Exit code for usage errors and failed enumeration.
 const EXIT_ERROR: u8 = 1;
 /// Exit code when `set` ran but one or more writes failed.
 const EXIT_PARTIAL_FAILURE: u8 = 2;
-
-/// Longest accepted `--camera` argument: `all` or a device index.
-///
-/// Even an absurd number of cameras fits in far fewer digits; the cap simply
-/// bounds what is parsed.
-const MAX_CAMERA_SELECTOR_LEN: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Command line
@@ -126,20 +120,6 @@ enum OutputFormat {
     Json,
 }
 
-/// What `set` should write: a user-supplied value or the device default.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SetValue {
-    Explicit(String),
-    Default,
-}
-
-/// Result of a command that can partially fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Outcome {
-    Success,
-    PartialFailure,
-}
-
 // ---------------------------------------------------------------------------
 // Output structures
 // ---------------------------------------------------------------------------
@@ -194,15 +174,11 @@ fn main() -> ExitCode {
 
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
-    let outcome = run(cli, &mut out).and_then(|outcome| {
-        out.flush()
-            .context("Failed to write output")
-            .map(|()| outcome)
-    });
+    let outcome = run(cli, &mut out)
+        .and_then(|code| out.flush().context("Failed to write output").map(|()| code));
 
     match outcome {
-        Ok(Outcome::Success) => ExitCode::SUCCESS,
-        Ok(Outcome::PartialFailure) => ExitCode::from(EXIT_PARTIAL_FAILURE),
+        Ok(code) => code,
         // The reader went away (e.g. `| head`); there is nothing left to say.
         Err(e) if is_broken_pipe(&e) => ExitCode::SUCCESS,
         Err(e) => {
@@ -239,7 +215,7 @@ fn is_broken_pipe(error: &anyhow::Error) -> bool {
         .any(|cause| matches!(cause.downcast_ref::<io::Error>(), Some(io) if io.kind() == io::ErrorKind::BrokenPipe))
 }
 
-fn run(cli: Cli, out: &mut dyn Write) -> Result<Outcome> {
+fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode> {
     debug!(args = ?std::env::args().collect::<Vec<_>>(), "Command line");
 
     match cli.command {
@@ -257,9 +233,9 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<Outcome> {
             output,
             ..
         } => {
-            // clap's `target` group guarantees exactly one of --value/--default.
-            let target = value.map_or(SetValue::Default, SetValue::Explicit);
-            if property.eq_ignore_ascii_case("all") && target != SetValue::Default {
+            // clap's `target` group guarantees exactly one of --value/--default,
+            // so `None` here means --default.
+            if property.eq_ignore_ascii_case("all") && value.is_some() {
                 bail!("Property 'all' can only be used with --default");
             }
             if restart_device && !webcam::is_elevated() {
@@ -267,11 +243,18 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<Outcome> {
                     "--restart-device needs administrator rights; run this from an elevated prompt"
                 );
             }
-            return set_property(&camera, &property, &target, restart_device, output, out);
+            return set_property(
+                &camera,
+                &property,
+                value.as_deref(),
+                restart_device,
+                output,
+                out,
+            );
         }
     }
 
-    Ok(Outcome::Success)
+    Ok(ExitCode::SUCCESS)
 }
 
 // ---------------------------------------------------------------------------
@@ -342,30 +325,27 @@ fn open_dialog(camera: &str, out: &mut dyn Write) -> Result<()> {
     writeln!(
         out,
         "[{idx}] {}: opening property dialog...",
-        device.info().display_name()
+        device.info().name
     )?;
     out.flush()?;
     device.open_property_dialog()?;
-    writeln!(
-        out,
-        "[{idx}] {}: dialog closed",
-        device.info().display_name()
-    )?;
+    writeln!(out, "[{idx}] {}: dialog closed", device.info().name)?;
     Ok(())
 }
 
+/// Runs `set`; `value` is `None` for `--default`.
 fn set_property(
     camera: &str,
     property: &str,
-    target: &SetValue,
+    value: Option<&str>,
     restart_device: bool,
     output: OutputFormat,
     out: &mut dyn Write,
-) -> Result<Outcome> {
+) -> Result<ExitCode> {
     debug!(
         camera,
         property,
-        ?target,
+        ?value,
         restart_device,
         ?output,
         "Setting property"
@@ -379,50 +359,50 @@ fn set_property(
 
     // Resolve the property name and parse the value once, up front: a typo is
     // a usage error (exit 1), not a per-device failure.
-    let request: Option<(&str, ParsedValue)> = if reset_all {
+    let request: Option<(Property, ParsedValue)> = if reset_all {
         None
     } else {
-        let canonical = webcam::canonical_property_name(property)
-            .with_context(|| format!("Unknown property '{property}'"))?;
-        let value = match target {
-            SetValue::Default => ParsedValue::Default,
-            SetValue::Explicit(text) => webcam::parse_property_value(canonical, text)?,
+        let property: Property = property.parse()?;
+        let value = match value {
+            None => ParsedValue::Default,
+            Some(text) => webcam::parse_property_value(property, text)?,
         };
-        Some((canonical, value))
+        Some((property, value))
     };
 
     let mut results: Vec<SetResult> = Vec::new();
     for idx in indices {
         let device = &devices[idx];
         let info = device.info();
-        let device_name = info.display_name();
+        let device_name = info.name.as_str();
 
-        // (canonical property name, value) pairs to write on this device.
-        let jobs: Vec<(&str, ParsedValue)> = match request {
+        // (property, value) pairs to write on this device.
+        let jobs: Vec<(&PropertyInfo, ParsedValue)> = match request {
             None => info
-                .properties()
-                .map(|p| (p.name.as_str(), ParsedValue::Default))
+                .properties
+                .iter()
+                .map(|p| (p, ParsedValue::Default))
                 .collect(),
-            Some((canonical, value)) => match info.property(canonical) {
-                Some(p) => vec![(p.name.as_str(), value)],
+            Some((property, value)) => match info.property(property) {
+                Some(p) => vec![(p, value)],
                 // With `--camera all`, devices that lack the property are
                 // skipped so one virtual camera cannot fail a fleet-wide set.
                 None if select_all => {
                     info!(
                         device_index = idx,
                         device_name,
-                        property = canonical,
+                        %property,
                         "Property not supported; skipped"
                     );
                     if output == OutputFormat::Text {
                         writeln!(
                             out,
-                            "[{idx}] {device_name}: {canonical} not supported (skipped)"
+                            "[{idx}] {device_name}: {property} not supported (skipped)"
                         )?;
                     }
                     Vec::new()
                 }
-                None => bail!("Property '{canonical}' not found on device '{device_name}'"),
+                None => bail!("Property '{property}' not found on device '{device_name}'"),
             },
         };
 
@@ -457,14 +437,17 @@ fn set_property(
     }
 
     Ok(if results.iter().all(|r| r.success) {
-        Outcome::Success
+        ExitCode::SUCCESS
     } else {
-        Outcome::PartialFailure
+        ExitCode::from(EXIT_PARTIAL_FAILURE)
     })
 }
 
 /// How long to wait for a restarted camera to re-enumerate before giving up.
 const DEVICE_RESTART_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A write the driver accepted: its entry in the results, what was sent.
+type Accepted = (usize, Property, Written);
 
 /// Writes each job on one device, then reads every accepted write back through
 /// a fresh handle. Some drivers keep a value only while an application has the
@@ -477,37 +460,38 @@ const DEVICE_RESTART_TIMEOUT: Duration = Duration::from_secs(15);
 fn apply_jobs(
     device: &webcam::Device<'_>,
     idx: usize,
-    jobs: &[(&str, ParsedValue)],
+    jobs: &[(&PropertyInfo, ParsedValue)],
     restart_device: bool,
 ) -> Result<Vec<SetResult>> {
-    let device_name = device.info().display_name();
+    let device_name = device.info().name.as_str();
     let mut entries: Vec<SetResult> = Vec::with_capacity(jobs.len());
-    let mut accepted: Vec<(usize, &str, Written)> = Vec::new();
+    let mut accepted: Vec<Accepted> = Vec::new();
 
-    for &(name, value) in jobs {
-        let result = device.set(name, value);
+    for &(prop, value) in jobs {
+        let property = prop.property;
+        let result = device.set(prop, value);
         match &result {
             Ok(written) => {
                 info!(
                     device_index = idx,
                     device_name,
-                    property = name,
+                    %property,
                     ?written,
                     "Property set"
                 );
-                accepted.push((entries.len(), name, *written));
+                accepted.push((entries.len(), property, *written));
             }
             Err(error) => {
-                debug!(device_index = idx, device_name, property = name, ?value, %error, "Failed to set property");
+                debug!(device_index = idx, device_name, %property, ?value, %error, "Failed to set property");
             }
         }
         entries.push(SetResult {
             index: idx,
             name: device_name.to_owned(),
-            property: name.to_owned(),
+            property: property.to_string(),
             value: match &result {
-                Ok(written) => display_written(name, *written),
-                Err(_) => display_requested(name, value),
+                Ok(written) => display_written(property, *written),
+                Err(_) => display_requested(property, value),
             },
             success: result.is_ok(),
             note: None,
@@ -518,88 +502,84 @@ fn apply_jobs(
     if accepted.is_empty() {
         return Ok(entries);
     }
-    let names: Vec<&str> = accepted.iter().map(|(_, name, _)| *name).collect();
-    match device.read_back(&names) {
-        Ok(readings) => {
-            for ((entry, name, written), reading) in accepted.iter().zip(readings) {
-                if let Some(current) = reading
-                    && !written.persisted_in(current)
-                {
-                    let now = display_current(name, current);
-                    let e = &mut entries[*entry];
-                    // The UVC class driver stores some controls and applies
-                    // them at the next device start even when the camera drops
-                    // them on close; that is a success with a caveat.
-                    if device.stored_value(name) == Some(written.value) {
-                        debug!(
-                            device_index = idx,
-                            device_name,
-                            property = name,
-                            ?written,
-                            ?current,
-                            "Write stored by the driver; pending device restart"
-                        );
-                        e.note = Some(format!(
-                            "stored by the driver and applied when the camera next starts (reconnect it or reboot); \
-                             until then the device reports {now} except while an application has it open"
-                        ));
-                    } else {
-                        debug!(
-                            device_index = idx,
-                            device_name,
-                            property = name,
-                            ?written,
-                            ?current,
-                            "Write did not persist"
-                        );
-                        e.success = false;
-                        e.error = Some(format!(
-                            "the driver accepted the write but the device now reports {now}; \
-                             this camera may keep the setting only while an application has it open"
-                        ));
-                    }
-                }
-            }
-        }
+    let properties: Vec<Property> = accepted.iter().map(|&(_, p, _)| p).collect();
+    let readings = match device.read_back(&properties) {
+        Ok(readings) => readings,
         Err(error) => {
             debug!(device_index = idx, device_name, %error, "Could not read values back");
+            return Ok(entries);
+        }
+    };
+
+    // Writes the driver stored for the next device start rather than applied.
+    let mut pending: Vec<Accepted> = Vec::new();
+    for (&(entry, property, written), reading) in accepted.iter().zip(readings) {
+        let Some(current) = reading else { continue };
+        if written.persisted_in(current) {
+            continue;
+        }
+        let now = display_current(property, current);
+        let e = &mut entries[entry];
+        // The UVC class driver stores some controls and applies them at the
+        // next device start even when the camera drops them on close; that is
+        // a success with a caveat.
+        if device.stored_value(property) == Some(written.value) {
+            debug!(
+                device_index = idx,
+                device_name,
+                %property,
+                ?written,
+                ?current,
+                "Write stored by the driver; pending device restart"
+            );
+            e.note = Some(format!(
+                "stored by the driver and applied when the camera next starts (reconnect it or reboot); \
+                 until then the device reports {now} except while an application has it open"
+            ));
+            pending.push((entry, property, written));
+        } else {
+            debug!(
+                device_index = idx,
+                device_name,
+                %property,
+                ?written,
+                ?current,
+                "Write did not persist"
+            );
+            e.success = false;
+            e.error = Some(format!(
+                "the driver accepted the write but the device now reports {now}; \
+                 this camera may keep the setting only while an application has it open"
+            ));
         }
     }
 
-    if restart_device {
-        restart_and_recheck(device, idx, &accepted, &mut entries)?;
+    if restart_device && !pending.is_empty() {
+        restart_and_recheck(device, idx, &pending, &mut entries)?;
     }
     Ok(entries)
 }
 
-/// Restarts the device if any write was only stored, then re-reads those writes.
+/// Restarts the device so the stored writes take effect, then re-reads them.
 ///
 /// # Errors
 /// Fails when the restart cannot be performed or the device does not return.
 fn restart_and_recheck(
     device: &webcam::Device<'_>,
     idx: usize,
-    accepted: &[(usize, &str, Written)],
+    pending: &[Accepted],
     entries: &mut [SetResult],
 ) -> Result<()> {
-    let device_name = device.info().display_name();
-    let pending: Vec<(usize, &str, Written)> = accepted
-        .iter()
-        .filter(|(entry, _, _)| entries[*entry].note.is_some())
-        .copied()
-        .collect();
-    if pending.is_empty() {
-        return Ok(());
-    }
+    let device_name = device.info().name.as_str();
     info!(
         device_index = idx,
         device_name, "Restarting device to apply stored values"
     );
     device.restart()?;
-    let names: Vec<&str> = pending.iter().map(|(_, name, _)| *name).collect();
-    let readings = device.read_back_when_ready(&names, DEVICE_RESTART_TIMEOUT)?;
-    for ((entry, name, written), reading) in pending.iter().zip(readings) {
-        let e = &mut entries[*entry];
+    let properties: Vec<Property> = pending.iter().map(|&(_, p, _)| p).collect();
+    let readings = device.read_back_when_ready(&properties, DEVICE_RESTART_TIMEOUT)?;
+    for (&(entry, property, written), reading) in pending.iter().zip(readings) {
+        let e = &mut entries[entry];
         match reading {
             Some(current) if written.persisted_in(current) => {
                 e.note = Some("applied after restarting the device".to_owned());
@@ -609,7 +589,7 @@ fn restart_and_recheck(
                 e.note = None;
                 e.error = Some(format!(
                     "the device was restarted but still reports {}",
-                    display_current(name, current)
+                    display_current(property, current)
                 ));
             }
             None => {
@@ -626,20 +606,12 @@ fn restart_and_recheck(
 
 /// Resolves `--camera` to device indices: `all`, or one 0-based index.
 fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize>> {
-    if camera.len() > MAX_CAMERA_SELECTOR_LEN {
-        bail!(
-            "Camera selection exceeds the maximum length of {MAX_CAMERA_SELECTOR_LEN} characters"
-        );
-    }
     if camera.eq_ignore_ascii_case("all") {
         return Ok((0..device_count).collect());
     }
-    if camera.is_empty() || !camera.chars().all(|c| c.is_ascii_digit()) {
-        bail!("Invalid camera index '{camera}': must be a number or 'all'");
-    }
     let idx: usize = camera
         .parse()
-        .with_context(|| format!("Invalid camera index '{camera}'"))?;
+        .with_context(|| format!("Invalid camera index '{camera}': must be a number or 'all'"))?;
     if idx >= device_count {
         bail!("Camera index {idx} not found (only {device_count} devices available)");
     }
@@ -647,16 +619,16 @@ fn parse_camera_selection(camera: &str, device_count: usize) -> Result<Vec<usize
 }
 
 /// What was actually sent to the driver, e.g. `50Hz` or `4000 [Auto]`.
-fn display_written(property: &str, written: Written) -> String {
+fn display_written(property: Property, written: Written) -> String {
     let value = webcam::format_property_value(property, written.value);
     match written.mode {
-        Mode::Manual => value,
-        Mode::Auto => format!("{value} [Auto]"),
+        webcam::Mode::Manual => value,
+        webcam::Mode::Auto => format!("{value} [Auto]"),
     }
 }
 
 /// What the user asked for, used when the write itself failed.
-fn display_requested(property: &str, value: ParsedValue) -> String {
+fn display_requested(property: Property, value: ParsedValue) -> String {
     match value {
         ParsedValue::Auto => "Auto".to_owned(),
         ParsedValue::Default => "default".to_owned(),
@@ -665,9 +637,9 @@ fn display_requested(property: &str, value: ParsedValue) -> String {
 }
 
 /// What the device reports now, e.g. `50Hz` or `3534 [Auto]`.
-fn display_current(property: &str, current: webcam::CurrentValue) -> String {
+fn display_current(property: Property, current: webcam::CurrentValue) -> String {
     let value = webcam::format_property_value(property, current.value);
-    if current.flags & Mode::Auto.flag() != 0 {
+    if current.is_auto() {
         format!("{value} [Auto]")
     } else {
         value
@@ -677,23 +649,25 @@ fn display_current(property: &str, current: webcam::CurrentValue) -> String {
 /// Converts a device's property list into display-ready output.
 fn build_device_output(idx: usize, device: &webcam::DeviceInfo) -> DeviceOutput<'_> {
     let properties = device
-        .properties()
+        .properties
+        .iter()
         .map(|prop| {
+            let property = prop.property;
             (
-                prop.name.clone(),
+                property.to_string(),
                 PropertyOutput {
                     value: prop
                         .current
-                        .map(|c| webcam::format_property_value(&prop.name, c.value)),
+                        .map(|c| webcam::format_property_value(property, c.value)),
                     mode: prop
                         .current
-                        .and_then(|c| webcam::current_mode(prop.caps, c.flags))
+                        .and_then(|c| webcam::current_mode(prop.caps, c))
                         .map(|m| m.to_string()),
-                    default: webcam::format_property_value(&prop.name, prop.default),
+                    default: webcam::format_property_value(property, prop.default),
                     min: prop.min,
                     max: prop.max,
                     step: prop.step,
-                    supported_values: webcam::build_enum_display(&prop.name, prop.min, prop.max),
+                    supported_values: webcam::build_enum_display(property, prop.min, prop.max),
                     modes_supported: webcam::format_capabilities(prop.caps),
                 },
             )
@@ -702,7 +676,7 @@ fn build_device_output(idx: usize, device: &webcam::DeviceInfo) -> DeviceOutput<
 
     DeviceOutput {
         index: idx,
-        name: device.display_name(),
+        name: &device.name,
         properties,
     }
 }
@@ -771,6 +745,7 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use clap::error::ErrorKind;
+    use webcam::Mode;
 
     #[test]
     fn cli_definition_is_consistent() {
@@ -794,7 +769,7 @@ mod tests {
         parse_camera_selection("-1", 3).unwrap_err();
         parse_camera_selection("a", 3).unwrap_err();
         parse_camera_selection("", 3).unwrap_err();
-        parse_camera_selection(&"1".repeat(MAX_CAMERA_SELECTOR_LEN + 1), 3).unwrap_err();
+        parse_camera_selection("99999999999999999999", 3).unwrap_err();
     }
 
     #[test]
@@ -904,11 +879,14 @@ mod tests {
             value,
             mode: Mode::Manual,
         };
-        assert_eq!(display_written("PowerlineFrequency", manual(1)), "50Hz");
-        assert_eq!(display_written("Brightness", manual(128)), "128");
+        assert_eq!(
+            display_written(Property::PowerlineFrequency, manual(1)),
+            "50Hz"
+        );
+        assert_eq!(display_written(Property::Brightness, manual(128)), "128");
         assert_eq!(
             display_written(
-                "WhiteBalance",
+                Property::WhiteBalance,
                 Written {
                     value: 4000,
                     mode: Mode::Auto
@@ -916,11 +894,17 @@ mod tests {
             ),
             "4000 [Auto]"
         );
-        assert_eq!(display_requested("Focus", ParsedValue::Auto), "Auto");
-        assert_eq!(display_requested("Focus", ParsedValue::Default), "default");
+        assert_eq!(
+            display_requested(Property::Focus, ParsedValue::Auto),
+            "Auto"
+        );
+        assert_eq!(
+            display_requested(Property::Focus, ParsedValue::Default),
+            "default"
+        );
         assert_eq!(
             display_current(
-                "Exposure",
+                Property::Exposure,
                 webcam::CurrentValue {
                     value: -6,
                     flags: Mode::Auto.flag()
@@ -930,7 +914,7 @@ mod tests {
         );
         assert_eq!(
             display_current(
-                "PowerlineFrequency",
+                Property::PowerlineFrequency,
                 webcam::CurrentValue { value: 1, flags: 0 }
             ),
             "50Hz"

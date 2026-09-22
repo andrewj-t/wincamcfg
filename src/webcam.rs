@@ -22,8 +22,10 @@
 //!
 //! # Values and modes
 //!
-//! Property values are plain `i32`s in DirectShow. A few properties are really
-//! enumerations (powerline frequency, colour enable, backlight compensation);
+//! Every property this tool knows is a [`Property`], which carries the
+//! interface it belongs to and its numeric identifier. Property values are
+//! plain `i32`s in DirectShow. A few properties are really enumerations
+//! (powerline frequency, colour enable, backlight compensation);
 //! [`format_property_value`] and [`parse_property_value`] translate between the
 //! numbers and the labels users type (`50Hz`, `On`, ...). Independently of the
 //! value, a property can run in `Auto` or `Manual` mode ([`Mode`]); the flag
@@ -38,7 +40,6 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::str::FromStr;
-
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -125,33 +126,51 @@ const CLSID_SYSTEM_DEVICE_ENUM: GUID = GUID::from_u128(0x62be5d10_60eb_11d0_bd3b
 const CLSID_VIDEO_INPUT_DEVICE_CATEGORY: GUID =
     GUID::from_u128(0x860bb310_5d01_11d0_bd3b_00a0c911ce86);
 
-/// `IAMVideoProcAmp` property identifiers (`VideoProcAmpProperty` in `strmif.h`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(i32)]
-pub(crate) enum VideoProcAmpProperty {
-    Brightness = 0,
-    Contrast = 1,
-    Hue = 2,
-    Saturation = 3,
-    Sharpness = 4,
-    Gamma = 5,
-    ColorEnable = 6,
-    WhiteBalance = 7,
-    BacklightCompensation = 8,
-    Gain = 9,
-    DigitalMultiplier = 10,
-    DigitalMultiplierLimit = 11,
-    WhiteBalanceComponent = 12,
-    PowerlineFrequency = 13,
+/// Which DirectShow interface a property belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PropertyType {
+    VideoProcAmp,
+    CameraControl,
 }
 
-impl VideoProcAmpProperty {
-    /// Every variant, in the order properties are queried and displayed.
+/// Every property this tool knows, across both DirectShow interfaces.
+///
+/// The numeric identifiers come from `VideoProcAmpProperty` and
+/// `CameraControlProperty` in `strmif.h`. They overlap between the two
+/// interfaces, so [`Property::kind`] says which interface to call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Property {
+    Brightness,
+    Contrast,
+    Hue,
+    Saturation,
+    Sharpness,
+    Gamma,
+    ColorEnable,
+    WhiteBalance,
+    BacklightCompensation,
+    Gain,
+    DigitalMultiplier,
+    DigitalMultiplierLimit,
+    WhiteBalanceComponent,
+    PowerlineFrequency,
+    Pan,
+    Tilt,
+    Roll,
+    Zoom,
+    Exposure,
+    Iris,
+    Focus,
+}
+
+impl Property {
+    /// Every property, in the order they are queried and displayed.
     ///
-    /// Matches the "Video Proc Amp" tab of the standard DirectShow property
-    /// dialog, followed by the properties that dialog does not show. This
-    /// order is part of the user-visible output, so keep it stable.
-    pub(crate) const ALL: [Self; 14] = [
+    /// Matches the "Video Proc Amp" and "Camera Control" tabs of the standard
+    /// DirectShow property dialog, each followed by the properties that tab
+    /// does not show. This order is part of the user-visible output, so keep
+    /// it stable.
+    pub(crate) const ALL: [Self; 21] = [
         Self::Brightness,
         Self::Contrast,
         Self::Hue,
@@ -166,71 +185,6 @@ impl VideoProcAmpProperty {
         Self::WhiteBalanceComponent,
         Self::DigitalMultiplier,
         Self::DigitalMultiplierLimit,
-    ];
-
-    /// Canonical name, as shown in output and accepted (case-insensitively) on input.
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Brightness => "Brightness",
-            Self::Contrast => "Contrast",
-            Self::Hue => "Hue",
-            Self::Saturation => "Saturation",
-            Self::Sharpness => "Sharpness",
-            Self::Gamma => "Gamma",
-            Self::ColorEnable => "ColorEnable",
-            Self::WhiteBalance => "WhiteBalance",
-            Self::BacklightCompensation => "BacklightCompensation",
-            Self::Gain => "Gain",
-            Self::DigitalMultiplier => "DigitalMultiplier",
-            Self::DigitalMultiplierLimit => "DigitalMultiplierLimit",
-            Self::WhiteBalanceComponent => "WhiteBalanceComponent",
-            Self::PowerlineFrequency => "PowerlineFrequency",
-        }
-    }
-}
-
-impl fmt::Display for VideoProcAmpProperty {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for VideoProcAmpProperty {
-    type Err = UnknownPropertyError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|p| p.as_str().eq_ignore_ascii_case(s))
-            .ok_or_else(|| UnknownPropertyError::new(s))
-    }
-}
-
-impl From<VideoProcAmpProperty> for i32 {
-    fn from(property: VideoProcAmpProperty) -> Self {
-        property as Self
-    }
-}
-
-/// `IAMCameraControl` property identifiers (`CameraControlProperty` in `strmif.h`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(i32)]
-pub(crate) enum CameraControlProperty {
-    Pan = 0,
-    Tilt = 1,
-    Roll = 2,
-    Zoom = 3,
-    Exposure = 4,
-    Iris = 5,
-    Focus = 6,
-}
-
-impl CameraControlProperty {
-    /// Every variant, in the order properties are queried and displayed.
-    ///
-    /// Matches the "Camera Control" tab of the standard DirectShow property
-    /// dialog. This order is part of the user-visible output, so keep it stable.
-    pub(crate) const ALL: [Self; 7] = [
         Self::Zoom,
         Self::Focus,
         Self::Exposure,
@@ -240,93 +194,66 @@ impl CameraControlProperty {
         Self::Roll,
     ];
 
+    /// Interface, numeric identifier and canonical name of the property.
+    const fn spec(self) -> (PropertyType, i32, &'static str) {
+        use PropertyType::{CameraControl, VideoProcAmp};
+        match self {
+            Self::Brightness => (VideoProcAmp, 0, "Brightness"),
+            Self::Contrast => (VideoProcAmp, 1, "Contrast"),
+            Self::Hue => (VideoProcAmp, 2, "Hue"),
+            Self::Saturation => (VideoProcAmp, 3, "Saturation"),
+            Self::Sharpness => (VideoProcAmp, 4, "Sharpness"),
+            Self::Gamma => (VideoProcAmp, 5, "Gamma"),
+            Self::ColorEnable => (VideoProcAmp, 6, "ColorEnable"),
+            Self::WhiteBalance => (VideoProcAmp, 7, "WhiteBalance"),
+            Self::BacklightCompensation => (VideoProcAmp, 8, "BacklightCompensation"),
+            Self::Gain => (VideoProcAmp, 9, "Gain"),
+            Self::DigitalMultiplier => (VideoProcAmp, 10, "DigitalMultiplier"),
+            Self::DigitalMultiplierLimit => (VideoProcAmp, 11, "DigitalMultiplierLimit"),
+            Self::WhiteBalanceComponent => (VideoProcAmp, 12, "WhiteBalanceComponent"),
+            Self::PowerlineFrequency => (VideoProcAmp, 13, "PowerlineFrequency"),
+            Self::Pan => (CameraControl, 0, "Pan"),
+            Self::Tilt => (CameraControl, 1, "Tilt"),
+            Self::Roll => (CameraControl, 2, "Roll"),
+            Self::Zoom => (CameraControl, 3, "Zoom"),
+            Self::Exposure => (CameraControl, 4, "Exposure"),
+            Self::Iris => (CameraControl, 5, "Iris"),
+            Self::Focus => (CameraControl, 6, "Focus"),
+        }
+    }
+
+    /// The DirectShow interface that exposes this property.
+    pub(crate) const fn kind(self) -> PropertyType {
+        self.spec().0
+    }
+
+    /// The identifier passed to the interface's `GetRange`, `Get` and `Set`.
+    pub(crate) const fn id(self) -> i32 {
+        self.spec().1
+    }
+
     /// Canonical name, as shown in output and accepted (case-insensitively) on input.
     pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pan => "Pan",
-            Self::Tilt => "Tilt",
-            Self::Roll => "Roll",
-            Self::Zoom => "Zoom",
-            Self::Exposure => "Exposure",
-            Self::Iris => "Iris",
-            Self::Focus => "Focus",
-        }
+        self.spec().2
     }
 }
 
-impl fmt::Display for CameraControlProperty {
+impl fmt::Display for Property {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl FromStr for CameraControlProperty {
-    type Err = UnknownPropertyError;
+impl FromStr for Property {
+    type Err = anyhow::Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    /// Resolves a user-typed name, ignoring ASCII case.
+    fn from_str(s: &str) -> Result<Self> {
         Self::ALL
             .into_iter()
             .find(|p| p.as_str().eq_ignore_ascii_case(s))
-            .ok_or_else(|| UnknownPropertyError::new(s))
+            .with_context(|| format!("Unknown property '{s}'"))
     }
-}
-
-impl From<CameraControlProperty> for i32 {
-    fn from(property: CameraControlProperty) -> Self {
-        property as Self
-    }
-}
-
-/// Error returned when a property name matches neither interface.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UnknownPropertyError {
-    name: String,
-}
-
-impl UnknownPropertyError {
-    fn new(name: &str) -> Self {
-        Self {
-            name: name.to_owned(),
-        }
-    }
-}
-
-impl fmt::Display for UnknownPropertyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown property '{}'", self.name)
-    }
-}
-
-impl std::error::Error for UnknownPropertyError {}
-
-/// Which DirectShow interface a property belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) enum PropertyType {
-    VideoProcAmp,
-    CameraControl,
-}
-
-impl fmt::Display for PropertyType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::VideoProcAmp => "VideoProcAmp",
-            Self::CameraControl => "CameraControl",
-        })
-    }
-}
-
-/// Resolves a user-typed property name to its canonical spelling.
-///
-/// Returns `None` when the name matches neither interface.
-#[must_use]
-pub(crate) fn canonical_property_name(name: &str) -> Option<&'static str> {
-    name.parse::<VideoProcAmpProperty>()
-        .map(VideoProcAmpProperty::as_str)
-        .or_else(|_| {
-            name.parse::<CameraControlProperty>()
-                .map(CameraControlProperty::as_str)
-        })
-        .ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -375,16 +302,30 @@ impl fmt::Display for Mode {
     }
 }
 
+/// The live value of a property together with its mode flags.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CurrentValue {
+    pub value: i32,
+    pub flags: i32,
+}
+
+impl CurrentValue {
+    /// Whether the driver reports the property as running in Auto mode.
+    pub(crate) const fn is_auto(self) -> bool {
+        self.flags & Mode::Auto.flag() != 0
+    }
+}
+
 /// Returns the current mode of a property, or `None` if it cannot switch modes.
 ///
 /// A property that does not advertise `Auto` in its capabilities is always
 /// manual, so reporting a mode for it would only add noise.
 #[must_use]
-pub(crate) fn current_mode(caps: i32, flags: i32) -> Option<Mode> {
+pub(crate) fn current_mode(caps: i32, current: CurrentValue) -> Option<Mode> {
     if !Mode::Auto.is_supported(caps) {
         return None;
     }
-    Some(if flags & Mode::Auto.flag() != 0 {
+    Some(if current.is_auto() {
         Mode::Auto
     } else {
         Mode::Manual
@@ -407,18 +348,20 @@ pub(crate) fn format_capabilities(caps: i32) -> Option<String> {
 /// Values come from `ksmedia.h` (`KSPROPERTY_VIDEOPROCAMP_POWERLINE_FREQUENCY`
 /// uses 0 = disabled, 1 = 50 Hz, 2 = 60 Hz, 3 = auto; boolean properties use
 /// 0 = off, 1 = on).
-fn value_labels(property_name: &str) -> Option<&'static [(i32, &'static str)]> {
-    match property_name {
-        "PowerlineFrequency" => Some(&[(0, "Disabled"), (1, "50Hz"), (2, "60Hz"), (3, "Auto")]),
-        "ColorEnable" | "BacklightCompensation" => Some(&[(0, "Off"), (1, "On")]),
+fn value_labels(property: Property) -> Option<&'static [(i32, &'static str)]> {
+    match property {
+        Property::PowerlineFrequency => {
+            Some(&[(0, "Disabled"), (1, "50Hz"), (2, "60Hz"), (3, "Auto")])
+        }
+        Property::ColorEnable | Property::BacklightCompensation => Some(&[(0, "Off"), (1, "On")]),
         _ => None,
     }
 }
 
 /// Formats a property value as its label if it has one, else as a number.
 #[must_use]
-pub(crate) fn format_property_value(property_name: &str, value: i32) -> String {
-    match value_labels(property_name) {
+pub(crate) fn format_property_value(property: Property, value: i32) -> String {
+    match value_labels(property) {
         Some(labels) => labels.iter().find(|&&(v, _)| v == value).map_or_else(
             || format!("Unknown({value})"),
             |&(_, label)| label.to_owned(),
@@ -429,8 +372,8 @@ pub(crate) fn format_property_value(property_name: &str, value: i32) -> String {
 
 /// Lists the labels a property accepts within `[min, max]`, e.g. `"50Hz (1), 60Hz (2)"`.
 #[must_use]
-pub(crate) fn build_enum_display(property_name: &str, min: i32, max: i32) -> Option<String> {
-    let labels = value_labels(property_name)?;
+pub(crate) fn build_enum_display(property: Property, min: i32, max: i32) -> Option<String> {
+    let labels = value_labels(property)?;
     let display = labels
         .iter()
         .filter(|&&(v, _)| v >= min && v <= max)
@@ -453,12 +396,6 @@ pub(crate) enum ParsedValue {
     Default,
 }
 
-/// Longest accepted `--value` string.
-///
-/// The longest label is `Disabled` (8) and the longest `i32` is 11 characters;
-/// anything longer is not a value this tool understands.
-const MAX_VALUE_LEN: usize = 32;
-
 /// Parses a user-supplied value such as `50Hz`, `On`, `Auto` or `-5`.
 ///
 /// Labels are checked before the `Auto` keyword, so a property whose label
@@ -466,21 +403,10 @@ const MAX_VALUE_LEN: usize = 32;
 /// mode switch. Everything else that is not a label must be a decimal number.
 ///
 /// # Errors
-/// Fails when the string is longer than [`MAX_VALUE_LEN`], contains characters
-/// other than ASCII letters, digits, `-` and space, or is neither a known label
-/// nor a number.
-pub(crate) fn parse_property_value(property_name: &str, value_str: &str) -> Result<ParsedValue> {
-    if value_str.len() > MAX_VALUE_LEN {
-        bail!("Value exceeds the maximum length of {MAX_VALUE_LEN} characters");
-    }
-    if !value_str
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' ')
-    {
-        bail!("Value contains invalid characters (only ASCII letters, digits, '-' and space)");
-    }
-
-    let labels = value_labels(property_name);
+/// Fails when the string is neither a known label, `Auto`, nor a decimal
+/// number that fits in an `i32`.
+pub(crate) fn parse_property_value(property: Property, value_str: &str) -> Result<ParsedValue> {
+    let labels = value_labels(property);
 
     if let Some(labels) = labels
         && let Some(&(v, _)) = labels
@@ -496,8 +422,14 @@ pub(crate) fn parse_property_value(property_name: &str, value_str: &str) -> Resu
 
     let parsed = value_str.parse::<i32>().with_context(|| match labels {
         Some(labels) => {
-            let valid = labels.iter().map(|&(_, l)| l).collect::<Vec<_>>().join(", ");
-            format!("Invalid value '{value_str}' for {property_name}. Expected one of: {valid}, or a number")
+            let valid = labels
+                .iter()
+                .map(|&(_, l)| l)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Invalid value '{value_str}' for {property}. Expected one of: {valid}, or a number"
+            )
         }
         None => format!("Invalid numeric value '{value_str}'"),
     })?;
@@ -509,7 +441,7 @@ pub(crate) fn parse_property_value(property_name: &str, value_str: &str) -> Resu
 // ---------------------------------------------------------------------------
 
 /// Range, default and capability flags reported by `GetRange`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct PropertyRange {
     min: i32,
     max: i32,
@@ -518,17 +450,10 @@ struct PropertyRange {
     caps: i32,
 }
 
-/// The live value of a property together with its mode flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CurrentValue {
-    pub value: i32,
-    pub flags: i32,
-}
-
 /// Everything known about one supported property of a device.
 #[derive(Debug, Clone)]
 pub(crate) struct PropertyInfo {
-    pub name: String,
+    pub property: Property,
     pub min: i32,
     pub max: i32,
     pub step: i32,
@@ -536,7 +461,6 @@ pub(crate) struct PropertyInfo {
     pub caps: i32,
     /// `None` when the driver reported a range but refused to read the value.
     pub current: Option<CurrentValue>,
-    pub property_type: PropertyType,
 }
 
 /// Plain data describing a device and its supported properties.
@@ -544,30 +468,18 @@ pub(crate) struct PropertyInfo {
 /// Holds no COM interfaces, so it may outlive the [`ComSession`].
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceInfo {
-    pub name: Option<String>,
+    /// The friendly name, or `"Unknown"` when the driver did not provide one.
+    pub name: String,
     /// DirectShow device path, e.g. `\\?\usb#vid_046d&pid_082d&mi_00#...`.
     pub device_path: Option<String>,
-    pub video_proc_amp_properties: Vec<PropertyInfo>,
-    pub camera_control_properties: Vec<PropertyInfo>,
+    /// All supported properties, `VideoProcAmp` first, in query order.
+    pub properties: Vec<PropertyInfo>,
 }
 
 impl DeviceInfo {
-    /// All supported properties, `VideoProcAmp` first, in query order.
-    pub(crate) fn properties(&self) -> impl Iterator<Item = &PropertyInfo> {
-        self.video_proc_amp_properties
-            .iter()
-            .chain(&self.camera_control_properties)
-    }
-
-    /// Looks a property up by name, ignoring ASCII case.
-    pub(crate) fn property(&self, name: &str) -> Option<&PropertyInfo> {
-        self.properties()
-            .find(|p| p.name.eq_ignore_ascii_case(name))
-    }
-
-    /// The friendly name, or `"Unknown"` when the driver did not provide one.
-    pub(crate) fn display_name(&self) -> &str {
-        self.name.as_deref().unwrap_or("Unknown")
+    /// Looks a property up, or `None` when the device does not support it.
+    pub(crate) fn property(&self, property: Property) -> Option<&PropertyInfo> {
+        self.properties.iter().find(|p| p.property == property)
     }
 }
 
@@ -579,6 +491,30 @@ pub(crate) struct DeviceListItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_path: Option<String>,
 }
+
+/// What a successful write sent to the driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Written {
+    pub value: i32,
+    pub mode: Mode,
+}
+
+impl Written {
+    /// Whether a value read back from the device shows this write took effect.
+    ///
+    /// Manual writes must read back the same value; Auto writes only need the
+    /// Auto flag, since the driver then chooses the value.
+    pub(crate) const fn persisted_in(self, current: CurrentValue) -> bool {
+        match self.mode {
+            Mode::Manual => current.value == self.value,
+            Mode::Auto => current.is_auto(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device handle
+// ---------------------------------------------------------------------------
 
 /// A capture device bound for the lifetime of a [`ComSession`].
 ///
@@ -598,34 +534,28 @@ impl Device<'_> {
 
     /// Writes a property on this device and reports what was sent.
     ///
-    /// The name is matched case-insensitively against the properties the
-    /// device reported; the value is validated against the reported range and
-    /// capabilities before the driver is called. A successful return means
-    /// the driver accepted the write; use [`Device::read_back`] to check that
-    /// it persisted.
+    /// `info` is one of this device's own [`DeviceInfo::properties`]; the value
+    /// is validated against its range and capabilities before the driver is
+    /// called. A successful return means the driver accepted the write; use
+    /// [`Device::read_back`] to check that it persisted.
     ///
     /// # Errors
-    /// Fails when the device does not support the property, the value is out of
-    /// range, the requested mode is not supported, or the driver rejects the
-    /// write.
-    #[instrument(skip(self), fields(device = %self.info.display_name()))]
-    pub(crate) fn set(&self, property: &str, value: ParsedValue) -> Result<Written> {
-        let info = self.info.property(property).with_context(|| {
-            format!(
-                "Property '{property}' not found on device '{}'",
-                self.info.display_name()
-            )
-        })?;
+    /// Fails when the value is out of range, the requested mode is not
+    /// supported, or the driver rejects the write.
+    #[instrument(skip(self, info), fields(device = %self.info.name, property = %info.property))]
+    pub(crate) fn set(&self, info: &PropertyInfo, value: ParsedValue) -> Result<Written> {
         let written = resolve_set(info, value)?;
 
         let filter = bind_filter(&self.moniker)?;
-        control_set(&filter, info, written.value, written.mode.flag()).with_context(|| {
-            format!(
-                "Failed to set {} to {} ({})",
-                info.name, written.value, written.mode
-            )
-        })?;
-        debug!(property = %info.name, value = written.value, mode = %written.mode, "Property set");
+        control_set(&filter, info.property, written.value, written.mode.flag()).with_context(
+            || {
+                format!(
+                    "Failed to set {} to {} ({})",
+                    info.property, written.value, written.mode
+                )
+            },
+        )?;
+        debug!(value = written.value, mode = %written.mode, "Property set");
         Ok(written)
     }
 
@@ -635,23 +565,45 @@ impl Device<'_> {
     /// camera open and revert it when the last handle closes. Re-binding the
     /// filter after the write is the only way to observe that from a single
     /// process. Returns one entry per requested property; `None` when the
-    /// property is unknown or the driver refused to read it.
+    /// driver refused to read it.
     ///
     /// # Errors
     /// Fails only when the device cannot be bound at all.
-    pub(crate) fn read_back(&self, properties: &[&str]) -> Result<Vec<Option<CurrentValue>>> {
+    pub(crate) fn read_back(&self, properties: &[Property]) -> Result<Vec<Option<CurrentValue>>> {
         let filter = bind_filter(&self.moniker)?;
         properties
             .iter()
-            .map(|name| match self.info.property(name) {
-                Some(info) => control_get(&filter, info),
-                None => Ok(None),
-            })
+            .map(|&property| control_get(&filter, property))
             .collect()
     }
-}
 
-impl Device<'_> {
+    /// [`Device::read_back`], retried until the device answers or `timeout` passes.
+    ///
+    /// After a restart the device takes a moment to re-enumerate; binding fails
+    /// until then.
+    ///
+    /// # Errors
+    /// Returns the last bind error once the timeout has elapsed.
+    pub(crate) fn read_back_when_ready(
+        &self,
+        properties: &[Property],
+        timeout: Duration,
+    ) -> Result<Vec<Option<CurrentValue>>> {
+        let start = Instant::now();
+        loop {
+            match self.read_back(properties) {
+                Ok(readings) => return Ok(readings),
+                Err(error) if start.elapsed() < timeout => {
+                    trace!(%error, "Device not ready yet; retrying");
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(error) => {
+                    return Err(error.context("Device did not come back after the restart"));
+                }
+            }
+        }
+    }
+
     /// The value the UVC class driver has stored for a property, if any.
     ///
     /// `usbvideo.sys` records some controls under the device's
@@ -661,8 +613,8 @@ impl Device<'_> {
     /// across handle closes therefore still honours the write after a
     /// reconnect or reboot. Returns `None` for vendor drivers, properties the
     /// class driver does not store, or devices without a device path.
-    pub(crate) fn stored_value(&self, property: &str) -> Option<i32> {
-        if !property.eq_ignore_ascii_case(VideoProcAmpProperty::PowerlineFrequency.as_str()) {
+    pub(crate) fn stored_value(&self, property: Property) -> Option<i32> {
+        if property != Property::PowerlineFrequency {
             return None;
         }
         let instance = device_instance_id(self.info.device_path.as_deref()?)?;
@@ -678,7 +630,7 @@ impl Device<'_> {
     /// Fails without administrator rights (`CR_ACCESS_DENIED`), when the
     /// device has no usable device path, or when Configuration Manager
     /// rejects the operation.
-    #[instrument(skip(self), fields(device = %self.info.display_name()))]
+    #[instrument(skip(self), fields(device = %self.info.name))]
     pub(crate) fn restart(&self) -> Result<()> {
         let path = self
             .info
@@ -706,31 +658,61 @@ impl Device<'_> {
         Ok(())
     }
 
-    /// [`Device::read_back`], retried until the device answers or `timeout` passes.
+    /// Opens the driver's own property dialog (the "Video Proc Amp" and
+    /// "Camera Control" pages) and blocks until the user closes it.
     ///
-    /// After a restart the device takes a moment to re-enumerate; binding fails
-    /// until then.
+    /// This is the same window OBS Studio and other DirectShow hosts show for
+    /// "Configure Video": the filter's `ISpecifyPropertyPages` pages, displayed
+    /// with `OleCreatePropertyFrame`. Changes made in the dialog are written by
+    /// the driver's page, not by this tool.
     ///
     /// # Errors
-    /// Returns the last bind error once the timeout has elapsed.
-    pub(crate) fn read_back_when_ready(
-        &self,
-        properties: &[&str],
-        timeout: Duration,
-    ) -> Result<Vec<Option<CurrentValue>>> {
-        let start = Instant::now();
-        loop {
-            match self.read_back(properties) {
-                Ok(readings) => return Ok(readings),
-                Err(error) if start.elapsed() < timeout => {
-                    trace!(%error, "Device not ready yet; retrying");
-                    std::thread::sleep(Duration::from_millis(250));
-                }
-                Err(error) => {
-                    return Err(error.context("Device did not come back after the restart"));
-                }
-            }
+    /// Fails when the device cannot be bound, exposes no property pages, or
+    /// the frame cannot be created.
+    #[instrument(skip(self), fields(device = %self.info.name))]
+    pub(crate) fn open_property_dialog(&self) -> Result<()> {
+        let filter = bind_filter(&self.moniker)?;
+        let pages: ISpecifyPropertyPages = filter
+            .cast()
+            .context("Device does not expose property pages")?;
+        // SAFETY: `pages` is a live interface. The returned CAUUID owns a
+        // CoTaskMem allocation that is freed below on every path.
+        let page_ids = unsafe { pages.GetPages() }.context("Failed to enumerate property pages")?;
+        let free_pages = || {
+            // SAFETY: `pElems` was allocated by COM for us and is freed
+            // exactly once; a null pointer is a no-op.
+            unsafe { CoTaskMemFree(Some(page_ids.pElems.cast_const().cast())) };
+        };
+        if page_ids.cElems == 0 || page_ids.pElems.is_null() {
+            free_pages();
+            bail!("Device has no property pages");
         }
+
+        let object: Option<IUnknown> = Some(filter.cast().context("Failed to get IUnknown")?);
+        let caption = HSTRING::from(self.info.name.as_str());
+        debug!(pages = page_ids.cElems, "Opening property dialog");
+        // SAFETY: `object` is a valid one-element array of live interface
+        // pointers; `pElems` points at `cElems` valid CLSIDs; the caption is a
+        // NUL-terminated wide string that outlives the call. The frame runs
+        // its own modal message loop on this STA thread and returns when the
+        // dialog closes.
+        let result = unsafe {
+            OleCreatePropertyFrame(
+                HWND::default(),
+                0,
+                0,
+                &caption,
+                1,
+                &raw const object,
+                page_ids.cElems,
+                page_ids.pElems,
+                0,
+                None,
+                None,
+            )
+        };
+        free_pages();
+        result.context("Failed to open the property dialog")
     }
 }
 
@@ -825,131 +807,6 @@ fn read_device_parameter_dword(instance_id: &str, value_name: &str) -> Option<i3
     i32::try_from(data).ok()
 }
 
-/// What a successful write sent to the driver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Written {
-    pub value: i32,
-    pub mode: Mode,
-}
-
-impl Written {
-    /// Whether a value read back from the device shows this write took effect.
-    ///
-    /// Manual writes must read back the same value; Auto writes only need the
-    /// Auto flag, since the driver then chooses the value.
-    pub(crate) const fn persisted_in(self, current: CurrentValue) -> bool {
-        match self.mode {
-            Mode::Manual => current.value == self.value,
-            Mode::Auto => current.flags & Mode::Auto.flag() != 0,
-        }
-    }
-}
-
-/// Dispatches a write to the interface the property belongs to.
-fn control_set(filter: &IBaseFilter, info: &PropertyInfo, value: i32, flags: i32) -> Result<()> {
-    // The stored name is canonical, so parsing it cannot fail for a property
-    // the device reported; the error path only guards data bugs.
-    match info.property_type {
-        PropertyType::VideoProcAmp => {
-            let id: VideoProcAmpProperty = info.name.parse()?;
-            filter
-                .cast::<IAMVideoProcAmp>()
-                .context("Failed to get IAMVideoProcAmp interface")?
-                .set(id.into(), value, flags)?;
-        }
-        PropertyType::CameraControl => {
-            let id: CameraControlProperty = info.name.parse()?;
-            filter
-                .cast::<IAMCameraControl>()
-                .context("Failed to get IAMCameraControl interface")?
-                .set(id.into(), value, flags)?;
-        }
-    }
-    Ok(())
-}
-
-/// Dispatches a read to the interface the property belongs to.
-fn control_get(filter: &IBaseFilter, info: &PropertyInfo) -> Result<Option<CurrentValue>> {
-    let current = match info.property_type {
-        PropertyType::VideoProcAmp => {
-            let id: VideoProcAmpProperty = info.name.parse()?;
-            filter
-                .cast::<IAMVideoProcAmp>()
-                .context("Failed to get IAMVideoProcAmp interface")?
-                .get(id.into())
-                .ok()
-        }
-        PropertyType::CameraControl => {
-            let id: CameraControlProperty = info.name.parse()?;
-            filter
-                .cast::<IAMCameraControl>()
-                .context("Failed to get IAMCameraControl interface")?
-                .get(id.into())
-                .ok()
-        }
-    };
-    Ok(current)
-}
-
-impl Device<'_> {
-    /// Opens the driver's own property dialog (the "Video Proc Amp" and
-    /// "Camera Control" pages) and blocks until the user closes it.
-    ///
-    /// This is the same window OBS Studio and other DirectShow hosts show for
-    /// "Configure Video": the filter's `ISpecifyPropertyPages` pages, displayed
-    /// with `OleCreatePropertyFrame`. Changes made in the dialog are written by
-    /// the driver's page, not by this tool.
-    ///
-    /// # Errors
-    /// Fails when the device cannot be bound, exposes no property pages, or
-    /// the frame cannot be created.
-    #[instrument(skip(self), fields(device = %self.info.display_name()))]
-    pub(crate) fn open_property_dialog(&self) -> Result<()> {
-        let filter = bind_filter(&self.moniker)?;
-        let pages: ISpecifyPropertyPages = filter
-            .cast()
-            .context("Device does not expose property pages")?;
-        // SAFETY: `pages` is a live interface. The returned CAUUID owns a
-        // CoTaskMem allocation that is freed below on every path.
-        let page_ids = unsafe { pages.GetPages() }.context("Failed to enumerate property pages")?;
-        let free_pages = || {
-            // SAFETY: `pElems` was allocated by COM for us and is freed
-            // exactly once; a null pointer is a no-op.
-            unsafe { CoTaskMemFree(Some(page_ids.pElems.cast_const().cast())) };
-        };
-        if page_ids.cElems == 0 || page_ids.pElems.is_null() {
-            free_pages();
-            bail!("Device has no property pages");
-        }
-
-        let object: Option<IUnknown> = Some(filter.cast().context("Failed to get IUnknown")?);
-        let caption = HSTRING::from(self.info.display_name());
-        debug!(pages = page_ids.cElems, "Opening property dialog");
-        // SAFETY: `object` is a valid one-element array of live interface
-        // pointers; `pElems` points at `cElems` valid CLSIDs; the caption is a
-        // NUL-terminated wide string that outlives the call. The frame runs
-        // its own modal message loop on this STA thread and returns when the
-        // dialog closes.
-        let result = unsafe {
-            OleCreatePropertyFrame(
-                HWND::default(),
-                0,
-                0,
-                &caption,
-                1,
-                &raw const object,
-                page_ids.cElems,
-                page_ids.pElems,
-                0,
-                None,
-                None,
-            )
-        };
-        free_pages();
-        result.context("Failed to open the property dialog")
-    }
-}
-
 /// Turns a requested value into the value and mode the driver will be sent.
 ///
 /// `Auto` keeps the current value (or the default) so drivers that insist on an
@@ -959,7 +816,7 @@ impl Device<'_> {
 /// advertises capabilities is only switched to a mode it supports; a property
 /// reporting no capabilities at all is written in manual mode as before.
 fn resolve_set(info: &PropertyInfo, value: ParsedValue) -> Result<Written> {
-    let name = &info.name;
+    let name = info.property;
     match value {
         ParsedValue::Auto => {
             if !Mode::Auto.is_supported(info.caps) {
@@ -1016,97 +873,85 @@ fn resolve_set(info: &PropertyInfo, value: ParsedValue) -> Result<Written> {
 /// Both interfaces expose the same `GetRange`/`Get`/`Set` triple over different
 /// property identifiers; this trait lets one generic query routine serve both.
 trait PropertyControl: Interface {
-    type Property: Copy + Into<i32> + fmt::Display + 'static;
     const KIND: PropertyType;
-    const QUERY_ORDER: &'static [Self::Property];
 
     fn range(&self, id: i32) -> windows::core::Result<PropertyRange>;
     fn get(&self, id: i32) -> windows::core::Result<CurrentValue>;
     fn set(&self, id: i32, value: i32, flags: i32) -> windows::core::Result<()>;
 }
 
-impl PropertyControl for IAMVideoProcAmp {
-    type Property = VideoProcAmpProperty;
-    const KIND: PropertyType = PropertyType::VideoProcAmp;
-    const QUERY_ORDER: &'static [Self::Property] = &VideoProcAmpProperty::ALL;
+/// Implements [`PropertyControl`] for an interface with that method triple.
+///
+/// windows-rs generates identical signatures for both interfaces, so the
+/// bodies are the same; only the type and its [`PropertyType`] differ.
+macro_rules! impl_property_control {
+    ($interface:ty, $kind:expr) => {
+        impl PropertyControl for $interface {
+            const KIND: PropertyType = $kind;
 
-    fn range(&self, id: i32) -> windows::core::Result<PropertyRange> {
-        let mut r = PropertyRange {
-            min: 0,
-            max: 0,
-            step: 0,
-            default: 0,
-            caps: 0,
-        };
-        // SAFETY: `self` is a live interface; every out-pointer refers to a
-        // local `i32` that outlives the call.
-        unsafe {
-            self.GetRange(
-                id,
-                &raw mut r.min,
-                &raw mut r.max,
-                &raw mut r.step,
-                &raw mut r.default,
-                &raw mut r.caps,
-            )
-        }?;
-        Ok(r)
-    }
+            fn range(&self, id: i32) -> windows::core::Result<PropertyRange> {
+                let mut r = PropertyRange::default();
+                // SAFETY: `self` is a live interface; every out-pointer refers
+                // to a local `i32` that outlives the call.
+                unsafe {
+                    self.GetRange(
+                        id,
+                        &raw mut r.min,
+                        &raw mut r.max,
+                        &raw mut r.step,
+                        &raw mut r.default,
+                        &raw mut r.caps,
+                    )
+                }?;
+                Ok(r)
+            }
 
-    fn get(&self, id: i32) -> windows::core::Result<CurrentValue> {
-        let mut c = CurrentValue { value: 0, flags: 0 };
-        // SAFETY: `self` is a live interface; both out-pointers refer to local
-        // `i32`s that outlive the call.
-        unsafe { self.Get(id, &raw mut c.value, &raw mut c.flags) }?;
-        Ok(c)
-    }
+            fn get(&self, id: i32) -> windows::core::Result<CurrentValue> {
+                let mut c = CurrentValue::default();
+                // SAFETY: `self` is a live interface; both out-pointers refer
+                // to local `i32`s that outlive the call.
+                unsafe { self.Get(id, &raw mut c.value, &raw mut c.flags) }?;
+                Ok(c)
+            }
 
-    fn set(&self, id: i32, value: i32, flags: i32) -> windows::core::Result<()> {
-        // SAFETY: `self` is a live interface; the arguments are plain integers.
-        unsafe { self.Set(id, value, flags) }
-    }
+            fn set(&self, id: i32, value: i32, flags: i32) -> windows::core::Result<()> {
+                // SAFETY: `self` is a live interface; the arguments are plain
+                // integers.
+                unsafe { self.Set(id, value, flags) }
+            }
+        }
+    };
 }
 
-impl PropertyControl for IAMCameraControl {
-    type Property = CameraControlProperty;
-    const KIND: PropertyType = PropertyType::CameraControl;
-    const QUERY_ORDER: &'static [Self::Property] = &CameraControlProperty::ALL;
+impl_property_control!(IAMVideoProcAmp, PropertyType::VideoProcAmp);
+impl_property_control!(IAMCameraControl, PropertyType::CameraControl);
 
-    fn range(&self, id: i32) -> windows::core::Result<PropertyRange> {
-        let mut r = PropertyRange {
-            min: 0,
-            max: 0,
-            step: 0,
-            default: 0,
-            caps: 0,
-        };
-        // SAFETY: `self` is a live interface; every out-pointer refers to a
-        // local `i32` that outlives the call.
-        unsafe {
-            self.GetRange(
-                id,
-                &raw mut r.min,
-                &raw mut r.max,
-                &raw mut r.step,
-                &raw mut r.default,
-                &raw mut r.caps,
-            )
-        }?;
-        Ok(r)
-    }
+/// Casts a bound filter to one of the property interfaces.
+fn interface<C: PropertyControl>(filter: &IBaseFilter) -> Result<C> {
+    filter
+        .cast()
+        .with_context(|| format!("Device does not expose the {:?} interface", C::KIND))
+}
 
-    fn get(&self, id: i32) -> windows::core::Result<CurrentValue> {
-        let mut c = CurrentValue { value: 0, flags: 0 };
-        // SAFETY: `self` is a live interface; both out-pointers refer to local
-        // `i32`s that outlive the call.
-        unsafe { self.Get(id, &raw mut c.value, &raw mut c.flags) }?;
-        Ok(c)
+/// Dispatches a write to the interface the property belongs to.
+fn control_set(filter: &IBaseFilter, property: Property, value: i32, flags: i32) -> Result<()> {
+    let id = property.id();
+    match property.kind() {
+        PropertyType::VideoProcAmp => interface::<IAMVideoProcAmp>(filter)?.set(id, value, flags),
+        PropertyType::CameraControl => interface::<IAMCameraControl>(filter)?.set(id, value, flags),
     }
+    .map_err(Into::into)
+}
 
-    fn set(&self, id: i32, value: i32, flags: i32) -> windows::core::Result<()> {
-        // SAFETY: `self` is a live interface; the arguments are plain integers.
-        unsafe { self.Set(id, value, flags) }
-    }
+/// Dispatches a read to the interface the property belongs to.
+///
+/// Returns `None` when the driver refuses to read the value.
+fn control_get(filter: &IBaseFilter, property: Property) -> Result<Option<CurrentValue>> {
+    let id = property.id();
+    Ok(match property.kind() {
+        PropertyType::VideoProcAmp => interface::<IAMVideoProcAmp>(filter)?.get(id).ok(),
+        PropertyType::CameraControl => interface::<IAMCameraControl>(filter)?.get(id).ok(),
+    })
 }
 
 /// Queries every property of one interface that the filter supports.
@@ -1114,31 +959,27 @@ impl PropertyControl for IAMCameraControl {
 /// A property whose `GetRange` fails is treated as unsupported and skipped; a
 /// property whose `Get` fails is reported without a current value.
 fn query_properties<C: PropertyControl>(filter: &IBaseFilter) -> Result<Vec<PropertyInfo>> {
-    let iface: C = filter
-        .cast()
-        .with_context(|| format!("Device does not expose the {} interface", C::KIND))?;
+    let iface: C = interface(filter)?;
 
-    let mut properties = Vec::with_capacity(C::QUERY_ORDER.len());
-    for &property in C::QUERY_ORDER {
-        let id: i32 = property.into();
-        let Ok(range) = iface.range(id) else {
-            trace!(property = %property, "GetRange failed; property not supported");
+    let mut properties = Vec::new();
+    for property in Property::ALL.into_iter().filter(|p| p.kind() == C::KIND) {
+        let Ok(range) = iface.range(property.id()) else {
+            trace!(%property, "GetRange failed; property not supported");
             continue;
         };
-        let current = iface.get(id).ok();
-        trace!(property = %property, ?range, ?current, "Property queried");
+        let current = iface.get(property.id()).ok();
+        trace!(%property, ?range, ?current, "Property queried");
         properties.push(PropertyInfo {
-            name: property.to_string(),
+            property,
             min: range.min,
             max: range.max,
             step: range.step,
             default: range.default,
             caps: range.caps,
             current,
-            property_type: C::KIND,
         });
     }
-    debug!(kind = %C::KIND, count = properties.len(), "Properties enumerated");
+    debug!(kind = ?C::KIND, count = properties.len(), "Properties enumerated");
     Ok(properties)
 }
 
@@ -1162,7 +1003,7 @@ pub(crate) fn list_devices(com: &ComSession) -> Result<Vec<DeviceListItem>> {
         .enumerate()
         .map(|(index, moniker)| DeviceListItem {
             index,
-            name: read_bag_string(moniker, "FriendlyName").unwrap_or_else(|_| "Unknown".to_owned()),
+            name: friendly_name(moniker),
             device_path: read_bag_string(moniker, "DevicePath").ok(),
         })
         .collect())
@@ -1171,7 +1012,7 @@ pub(crate) fn list_devices(com: &ComSession) -> Result<Vec<DeviceListItem>> {
 /// Enumerates capture devices and reads every supported property of each.
 ///
 /// Each device is bound to its filter once; a device that cannot be bound is
-/// still returned, with empty property lists, so indices stay stable between
+/// still returned, with an empty property list, so indices stay stable between
 /// `list` and `get`.
 ///
 /// # Errors
@@ -1183,18 +1024,21 @@ pub(crate) fn open_devices(com: &ComSession) -> Result<Vec<Device<'_>>> {
     let mut devices = Vec::with_capacity(monikers.len());
 
     for moniker in monikers {
-        let name = read_bag_string(&moniker, "FriendlyName").ok();
+        let name = friendly_name(&moniker);
         let device_path = read_bag_string(&moniker, "DevicePath").ok();
-        debug!(?name, ?device_path, "Processing device");
+        debug!(%name, ?device_path, "Processing device");
 
-        let (video_proc_amp_properties, camera_control_properties) = match bind_filter(&moniker) {
-            Ok(filter) => (
-                query_properties::<IAMVideoProcAmp>(&filter).unwrap_or_default(),
-                query_properties::<IAMCameraControl>(&filter).unwrap_or_default(),
-            ),
+        let properties = match bind_filter(&moniker) {
+            Ok(filter) => {
+                let mut properties =
+                    query_properties::<IAMVideoProcAmp>(&filter).unwrap_or_default();
+                properties
+                    .extend(query_properties::<IAMCameraControl>(&filter).unwrap_or_default());
+                properties
+            }
             Err(error) => {
-                debug!(?name, %error, "Could not bind device filter; reporting no properties");
-                (Vec::new(), Vec::new())
+                debug!(%name, %error, "Could not bind device filter; reporting no properties");
+                Vec::new()
             }
         };
 
@@ -1203,8 +1047,7 @@ pub(crate) fn open_devices(com: &ComSession) -> Result<Vec<Device<'_>>> {
             info: DeviceInfo {
                 name,
                 device_path,
-                video_proc_amp_properties,
-                camera_control_properties,
+                properties,
             },
             _com: PhantomData,
         });
@@ -1265,6 +1108,11 @@ fn bind_filter(moniker: &IMoniker) -> Result<IBaseFilter> {
     unsafe { moniker.BindToObject(None, None) }.context("Failed to bind to device filter")
 }
 
+/// The device's friendly name, or `"Unknown"` when the driver provides none.
+fn friendly_name(moniker: &IMoniker) -> String {
+    read_bag_string(moniker, "FriendlyName").unwrap_or_else(|_| "Unknown".to_owned())
+}
+
 /// A `VARIANT` that is always cleared, whatever happens after it is filled.
 #[derive(Default)]
 struct OwnedVariant(VARIANT);
@@ -1313,39 +1161,50 @@ fn read_bag_string(moniker: &IMoniker, property: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
-    const ENUM_PROPERTIES: [&str; 3] =
-        ["PowerlineFrequency", "ColorEnable", "BacklightCompensation"];
+    const ENUM_PROPERTIES: [Property; 3] = [
+        Property::PowerlineFrequency,
+        Property::ColorEnable,
+        Property::BacklightCompensation,
+    ];
 
-    fn info(name: &str, min: i32, max: i32, step: i32, default: i32, caps: i32) -> PropertyInfo {
+    fn info(
+        property: Property,
+        min: i32,
+        max: i32,
+        step: i32,
+        default: i32,
+        caps: i32,
+    ) -> PropertyInfo {
         PropertyInfo {
-            name: name.to_owned(),
+            property,
             min,
             max,
             step,
             default,
             caps,
             current: None,
-            property_type: PropertyType::VideoProcAmp,
         }
     }
 
     #[test]
     fn labels_round_trip_through_format_and_parse() {
-        for name in ENUM_PROPERTIES {
-            let labels = value_labels(name).expect("enum property has labels");
+        for property in ENUM_PROPERTIES {
+            let labels = value_labels(property).expect("enum property has labels");
             for &(value, label) in labels {
-                assert_eq!(format_property_value(name, value), label);
+                assert_eq!(format_property_value(property, value), label);
                 assert_eq!(
-                    parse_property_value(name, label).unwrap(),
+                    parse_property_value(property, label).unwrap(),
                     ParsedValue::Manual(value),
-                    "{name}/{label}"
+                    "{property}/{label}"
                 );
                 assert_eq!(
-                    parse_property_value(name, &label.to_ascii_lowercase()).unwrap(),
+                    parse_property_value(property, &label.to_ascii_lowercase()).unwrap(),
                     ParsedValue::Manual(value),
-                    "{name}/{label} lowercase"
+                    "{property}/{label} lowercase"
                 );
             }
         }
@@ -1354,11 +1213,11 @@ mod tests {
     #[test]
     fn auto_label_wins_over_auto_mode_for_powerline_frequency() {
         assert_eq!(
-            parse_property_value("PowerlineFrequency", "Auto").unwrap(),
+            parse_property_value(Property::PowerlineFrequency, "Auto").unwrap(),
             ParsedValue::Manual(3)
         );
         assert_eq!(
-            parse_property_value("PowerlineFrequency", "AUTO").unwrap(),
+            parse_property_value(Property::PowerlineFrequency, "AUTO").unwrap(),
             ParsedValue::Manual(3)
         );
     }
@@ -1366,15 +1225,15 @@ mod tests {
     #[test]
     fn auto_keyword_requests_auto_mode_elsewhere() {
         assert_eq!(
-            parse_property_value("Brightness", "auto").unwrap(),
+            parse_property_value(Property::Brightness, "auto").unwrap(),
             ParsedValue::Auto
         );
         assert_eq!(
-            parse_property_value("Exposure", "Auto").unwrap(),
+            parse_property_value(Property::Exposure, "Auto").unwrap(),
             ParsedValue::Auto
         );
         assert_eq!(
-            parse_property_value("ColorEnable", "auto").unwrap(),
+            parse_property_value(Property::ColorEnable, "auto").unwrap(),
             ParsedValue::Auto
         );
     }
@@ -1382,28 +1241,29 @@ mod tests {
     #[test]
     fn numeric_values_parse_including_negatives() {
         assert_eq!(
-            parse_property_value("Exposure", "-5").unwrap(),
+            parse_property_value(Property::Exposure, "-5").unwrap(),
             ParsedValue::Manual(-5)
         );
         assert_eq!(
-            parse_property_value("Brightness", "128").unwrap(),
+            parse_property_value(Property::Brightness, "128").unwrap(),
             ParsedValue::Manual(128)
         );
         assert_eq!(
-            parse_property_value("PowerlineFrequency", "1").unwrap(),
+            parse_property_value(Property::PowerlineFrequency, "1").unwrap(),
             ParsedValue::Manual(1)
         );
     }
 
     #[test]
     fn invalid_values_are_rejected() {
-        parse_property_value("Brightness", "abc").unwrap_err();
-        parse_property_value("Brightness", "1 2").unwrap_err();
-        parse_property_value("Brightness", &"1".repeat(MAX_VALUE_LEN + 1)).unwrap_err();
-        // Arabic-Indic digit three: Unicode-alphanumeric but not ASCII.
-        parse_property_value("Brightness", "\u{663}").unwrap_err();
-        parse_property_value("Brightness", "50Hz").unwrap_err();
-        let err = parse_property_value("PowerlineFrequency", "70Hz").unwrap_err();
+        parse_property_value(Property::Brightness, "abc").unwrap_err();
+        parse_property_value(Property::Brightness, "1 2").unwrap_err();
+        parse_property_value(Property::Brightness, "").unwrap_err();
+        parse_property_value(Property::Brightness, "99999999999").unwrap_err();
+        // Arabic-Indic digit three: a Unicode digit, but not a decimal number.
+        parse_property_value(Property::Brightness, "\u{663}").unwrap_err();
+        parse_property_value(Property::Brightness, "50Hz").unwrap_err();
+        let err = parse_property_value(Property::PowerlineFrequency, "70Hz").unwrap_err();
         assert!(
             format!("{err:#}").contains("50Hz"),
             "error lists valid labels: {err:#}"
@@ -1412,18 +1272,21 @@ mod tests {
 
     #[test]
     fn unknown_enum_values_are_formatted_explicitly() {
-        assert_eq!(format_property_value("PowerlineFrequency", 7), "Unknown(7)");
-        assert_eq!(format_property_value("Brightness", 7), "7");
+        assert_eq!(
+            format_property_value(Property::PowerlineFrequency, 7),
+            "Unknown(7)"
+        );
+        assert_eq!(format_property_value(Property::Brightness, 7), "7");
     }
 
     #[test]
     fn enum_display_is_clipped_to_the_device_range() {
         assert_eq!(
-            build_enum_display("PowerlineFrequency", 1, 2).as_deref(),
+            build_enum_display(Property::PowerlineFrequency, 1, 2).as_deref(),
             Some("50Hz (1), 60Hz (2)")
         );
-        assert_eq!(build_enum_display("PowerlineFrequency", 5, 9), None);
-        assert_eq!(build_enum_display("Brightness", 0, 255), None);
+        assert_eq!(build_enum_display(Property::PowerlineFrequency, 5, 9), None);
+        assert_eq!(build_enum_display(Property::Brightness, 0, 255), None);
     }
 
     #[test]
@@ -1432,7 +1295,7 @@ mod tests {
         let manual = Mode::Manual.flag();
         for caps in 0..=3 {
             for flags in [auto, manual] {
-                let mode = current_mode(caps, flags);
+                let mode = current_mode(caps, CurrentValue { value: 0, flags });
                 if caps & auto == 0 {
                     assert_eq!(mode, None, "caps={caps} flags={flags}");
                 } else if flags & auto != 0 {
@@ -1454,45 +1317,38 @@ mod tests {
     #[test]
     fn property_names_parse_case_insensitively() {
         assert_eq!(
-            "brightness".parse::<VideoProcAmpProperty>().unwrap(),
-            VideoProcAmpProperty::Brightness
+            "brightness".parse::<Property>().unwrap(),
+            Property::Brightness
         );
+        assert_eq!("FOCUS".parse::<Property>().unwrap(), Property::Focus);
         assert_eq!(
-            "FOCUS".parse::<CameraControlProperty>().unwrap(),
-            CameraControlProperty::Focus
+            "powerlinefrequency".parse::<Property>().unwrap().as_str(),
+            "PowerlineFrequency"
         );
-        let err = "bogus".parse::<VideoProcAmpProperty>().unwrap_err();
+        let err = "bogus".parse::<Property>().unwrap_err();
         assert!(err.to_string().contains("bogus"));
     }
 
     #[test]
-    fn canonical_names_resolve_case_insensitively() {
-        assert_eq!(
-            canonical_property_name("powerlinefrequency"),
-            Some("PowerlineFrequency")
-        );
-        assert_eq!(canonical_property_name("FOCUS"), Some("Focus"));
-        assert_eq!(canonical_property_name("bogus"), None);
-    }
-
-    #[test]
-    fn every_property_round_trips_through_its_name() {
-        for p in VideoProcAmpProperty::ALL {
-            assert_eq!(p.as_str().parse::<VideoProcAmpProperty>().unwrap(), p);
+    fn property_table_is_consistent() {
+        for p in Property::ALL {
+            assert_eq!(p.as_str().parse::<Property>().unwrap(), p);
         }
-        for p in CameraControlProperty::ALL {
-            assert_eq!(p.as_str().parse::<CameraControlProperty>().unwrap(), p);
-        }
-        // The two name spaces must not overlap, or a name could not identify its interface.
-        for v in VideoProcAmpProperty::ALL {
-            v.as_str().parse::<CameraControlProperty>().unwrap_err();
+        // Names identify a property on their own, so none may repeat.
+        let names: HashSet<&str> = Property::ALL.iter().map(|p| p.as_str()).collect();
+        assert_eq!(names.len(), Property::ALL.len());
+        // Within one interface every identifier is distinct.
+        for kind in [PropertyType::VideoProcAmp, PropertyType::CameraControl] {
+            let of_kind = || Property::ALL.iter().filter(|p| p.kind() == kind);
+            let ids: HashSet<i32> = of_kind().map(|p| p.id()).collect();
+            assert_eq!(ids.len(), of_kind().count(), "{kind:?}");
         }
     }
 
     #[test]
     fn resolve_set_validates_range_and_modes() {
         let both = Mode::Auto.flag() | Mode::Manual.flag();
-        let p = info("Exposure", -11, -1, 1, -6, both);
+        let p = info(Property::Exposure, -11, -1, 1, -6, both);
         let manual = |value| Written {
             value,
             mode: Mode::Manual,
@@ -1517,15 +1373,15 @@ mod tests {
         });
         assert_eq!(resolve_set(&live, ParsedValue::Auto).unwrap(), auto(-3));
 
-        let manual_only = info("Brightness", 0, 255, 1, 128, Mode::Manual.flag());
+        let manual_only = info(Property::Brightness, 0, 255, 1, 128, Mode::Manual.flag());
         let err = resolve_set(&manual_only, ParsedValue::Auto).unwrap_err();
         assert!(err.to_string().contains("Manual"), "{err}");
 
-        let auto_only = info("Focus", 0, 255, 5, 0, Mode::Auto.flag());
+        let auto_only = info(Property::Focus, 0, 255, 5, 0, Mode::Auto.flag());
         resolve_set(&auto_only, ParsedValue::Manual(10)).unwrap_err();
 
         // No capabilities reported at all: keep writing manual values as before.
-        let no_caps = info("Gamma", 100, 300, 1, 200, 0);
+        let no_caps = info(Property::Gamma, 100, 300, 1, 200, 0);
         assert_eq!(
             resolve_set(&no_caps, ParsedValue::Manual(150)).unwrap(),
             manual(150)
@@ -1535,7 +1391,7 @@ mod tests {
     #[test]
     fn default_restores_the_default_value_in_auto_where_supported() {
         let both = Mode::Auto.flag() | Mode::Manual.flag();
-        let auto_capable = info("WhiteBalance", 2000, 6500, 1, 4000, both);
+        let auto_capable = info(Property::WhiteBalance, 2000, 6500, 1, 4000, both);
         assert_eq!(
             resolve_set(&auto_capable, ParsedValue::Default).unwrap(),
             Written {
@@ -1543,7 +1399,7 @@ mod tests {
                 mode: Mode::Auto
             }
         );
-        let manual_only = info("Brightness", 0, 255, 1, 128, Mode::Manual.flag());
+        let manual_only = info(Property::Brightness, 0, 255, 1, 128, Mode::Manual.flag());
         assert_eq!(
             resolve_set(&manual_only, ParsedValue::Default).unwrap(),
             Written {
@@ -1551,7 +1407,7 @@ mod tests {
                 mode: Mode::Manual
             }
         );
-        let no_caps = info("PowerlineFrequency", 1, 2, 1, 2, 0);
+        let no_caps = info(Property::PowerlineFrequency, 1, 2, 1, 2, 0);
         assert_eq!(
             resolve_set(&no_caps, ParsedValue::Default).unwrap(),
             Written {
@@ -1595,23 +1451,17 @@ mod tests {
     }
 
     #[test]
-    fn device_info_lookup_ignores_case() {
+    fn device_info_lookup_reports_unsupported_properties() {
         let device = DeviceInfo {
-            name: None,
+            name: "Unknown".to_owned(),
             device_path: None,
-            video_proc_amp_properties: vec![info("Brightness", 0, 255, 1, 128, 2)],
-            camera_control_properties: vec![info("Focus", 0, 255, 1, 0, 3)],
+            properties: vec![
+                info(Property::Brightness, 0, 255, 1, 128, 2),
+                info(Property::Focus, 0, 255, 1, 0, 3),
+            ],
         };
-        assert_eq!(
-            device.property("BRIGHTNESS").map(|p| p.name.as_str()),
-            Some("Brightness")
-        );
-        assert_eq!(
-            device.property("focus").map(|p| p.name.as_str()),
-            Some("Focus")
-        );
-        assert!(device.property("Zoom").is_none());
-        assert_eq!(device.display_name(), "Unknown");
-        assert_eq!(device.properties().count(), 2);
+        assert!(device.property(Property::Brightness).is_some());
+        assert!(device.property(Property::Focus).is_some());
+        assert!(device.property(Property::Zoom).is_none());
     }
 }
