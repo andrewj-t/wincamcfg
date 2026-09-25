@@ -1,17 +1,10 @@
 //! Build script: embeds a Windows application manifest and version resource.
 
+const DESCRIPTION: &str = "A command line utility for managing webcam configuration on windows";
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
-
-    // Only embed resources on Windows
-    #[cfg(windows)]
-    embed_windows_resources();
-}
-
-#[cfg(windows)]
-fn embed_windows_resources() {
-    const DESCRIPTION: &str = "A command line utility for managing webcam configuration on windows";
 
     // Windows manifests require a numeric 4-part version, so drop any
     // pre-release/build suffix ("0.4.0-rc1" -> "0.4.0") before appending ".0".
@@ -23,13 +16,13 @@ fn embed_windows_resources() {
     let manifest_version = format!("{numeric_version}.0");
 
     // The manifest's processorArchitecture must match the build target;
-    // "amd64" and "arm64" are the identifiers Windows expects.
+    // "amd64" and "arm64" are the identifiers Windows expects. "*" is the
+    // manifest wildcard for anything else.
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH")
         .expect("cargo always sets CARGO_CFG_TARGET_ARCH for build scripts");
     let processor_architecture = match target_arch.as_str() {
         "x86_64" => "amd64",
         "aarch64" => "arm64",
-        "x86" => "x86",
         _ => "*",
     };
 

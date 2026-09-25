@@ -1,0 +1,61 @@
+name: Bug report
+description: Report something wincamcfg gets wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The five fields below are what it usually takes to reproduce a camera problem.
+        See [docs/troubleshooting.md](https://github.com/andrewj-t/wincamcfg/blob/main/docs/troubleshooting.md) for the common causes first.
+  - type: input
+    id: version
+    attributes:
+      label: wincamcfg version
+      description: Output of `wincamcfg --version`.
+      placeholder: wincamcfg 0.4.0
+    validations:
+      required: true
+  - type: input
+    id: camera
+    attributes:
+      label: Camera model
+      description: The device name as `wincamcfg list` prints it.
+      placeholder: "[0] HD Pro Webcam C920"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command you ran.
+      render: text
+      placeholder: wincamcfg set --camera 0 --property PowerlineFrequency --value 50Hz
+    validations:
+      required: true
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: What happened, and what you expected
+      description: Include the output you got and the exit code if you have it.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Trace log
+      description: |
+        Run the failing command with trace logging and attach or paste `debug.log`:
+
+        ```powershell
+        $env:RUST_LOG="trace"; wincamcfg [your command] 2> debug.log
+        ```
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: false
