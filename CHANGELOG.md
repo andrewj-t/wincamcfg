@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/andrewj-t/wincamcfg/compare/v0.4.0...v0.5.0) - 2026-09-25
+
+### Added
+
+- Show the device path in get
+- Show the driver's details in get
+
+### Changed
+
+- Clarify set, write verification and output after the module split
+- Split into commands, output and webcam/property modules
+- Trim comments and compact the remaining verbose code
+- Use windows-registry, IsUserAnAdmin and owned VARIANT; move write verification into webcam.rs
+- One Property enum, parser-based validation, fewer duplicate impls
+
+### Fixed
+
+- Log every read-back at trace level
+
+### Documentation
+
+- Split documentation by audience under docs/
+- Add architecture diagrams under docs/
+- Correct the SBOM attestation verification commands
+
 ## [0.4.0] - 2026-09-22
 
 A cleanup of the whole project. It fixes several real bugs in `set`, makes the tool honest about what happened to a write, tightens the build and the CI pipeline, and hands releases to release-plz. It also settles something that came up during testing: on some cameras a powerline frequency write seems to vanish. It does not. See "Writes that take effect later" below.
